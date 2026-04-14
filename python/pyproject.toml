@@ -1,0 +1,31 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "onemin"
+version = "0.1.0"
+description = "Python SDK for the 1min.ai API"
+requires-python = ">=3.10"
+dependencies = [
+    "httpx>=0.28.1,<1",
+    "pydantic>=2.12,<3",
+    "anyio>=3.5.0,<5",
+    "httpx-sse>=0.4.0",
+    "typing-extensions>=4.14,<5",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.25",
+    "respx>=0.22",
+    "ruff>=0.15",
+    "pyright>=1.1.390",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/onemin"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

@@ -1,0 +1,45 @@
+{
+  "name": "@onemin/sdk",
+  "version": "0.1.0",
+  "description": "TypeScript SDK for the 1min.ai API",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src/"
+  },
+  "keywords": [
+    "1min",
+    "1min.ai",
+    "ai",
+    "sdk",
+    "openai",
+    "claude",
+    "midjourney"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^25.5.2",
+    "tsup": "^8.5.1",
+    "typescript": "^5.8.3",
+    "vitest": "^1.6.0"
+  }
+}
