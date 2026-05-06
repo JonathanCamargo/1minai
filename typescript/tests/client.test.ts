@@ -8,6 +8,7 @@ import {
   APIError,
   ConnectionError,
   TimeoutError,
+  UnsupportedModelError,
 } from '../src/error.js';
 import { OneMinClient } from '../src/client.js';
 
@@ -113,6 +114,31 @@ describe('OneMinClient - HTTP error mapping', () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(mockResponse('Bad request', 400)));
     await expect(client._request('GET', '/test')).rejects.toThrow(BadRequestError);
     await expect(client._request('GET', '/test')).rejects.toMatchObject({ statusCode: 400 });
+  });
+
+  it('promotes UNSUPPORTED_MODEL 400 to UnsupportedModelError with suggestions', async () => {
+    const body = JSON.stringify({
+      errorCode: 'UNSUPPORTED_MODEL',
+      message: 'Model totally-not-a-model is not supported',
+    });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(mockResponse(body, 400)));
+    const err = await client._request('GET', '/test').catch((e) => e);
+    expect(err).toBeInstanceOf(UnsupportedModelError);
+    expect(err).toBeInstanceOf(BadRequestError);
+    expect(err.requestedModel).toBe('totally-not-a-model');
+    expect(err.suggestions.length).toBeGreaterThan(0);
+    expect(err.message).toContain('Try one of:');
+  });
+
+  it('keeps non-UNSUPPORTED_MODEL 400 as plain BadRequestError', async () => {
+    const body = JSON.stringify({
+      errorCode: 'REQUEST_BODY_VALIDATION_FAILED',
+      message: 'bad payload',
+    });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(mockResponse(body, 400)));
+    const err = await client._request('GET', '/test').catch((e) => e);
+    expect(err).toBeInstanceOf(BadRequestError);
+    expect(err).not.toBeInstanceOf(UnsupportedModelError);
   });
 
   it('throws InternalServerError for 500 response', async () => {

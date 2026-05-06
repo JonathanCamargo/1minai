@@ -37,6 +37,7 @@ export {
   RateLimitError,
   NotFoundError,
   BadRequestError,
+  UnsupportedModelError,
   InternalServerError,
   ConnectionError,
   TimeoutError,

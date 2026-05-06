@@ -61,6 +61,13 @@ def make_async_event_source(events: list[FakeSSE]):
 # Tests for _extract_token
 # ---------------------------------------------------------------------------
 
+def test_extract_token_content_field():
+    """_extract_token returns obj['content'] for /api/chat-with-ai content events."""
+    from onemin._streaming import _extract_token
+    obj = {"content": "Hello"}
+    assert _extract_token(obj) == "Hello"
+
+
 def test_extract_token_openai_delta_content():
     """_extract_token returns choices[0].delta.content for OpenAI-style payloads."""
     from onemin._streaming import _extract_token
@@ -224,6 +231,79 @@ def test_stream_sse_skips_non_data_sse_lines():
         ))
 
     assert tokens == ["tok"]
+
+
+def test_stream_sse_yields_content_field_payloads():
+    """stream_sse yields tokens for /api/chat-with-ai content event payloads."""
+    from onemin._streaming import stream_sse
+
+    events = [
+        FakeSSE(data=json.dumps({"content": "Hel"}), event="content"),
+        FakeSSE(data=json.dumps({"content": "lo"}), event="content"),
+        FakeSSE(data="[DONE]"),
+    ]
+    ctx = make_sync_event_source(events)
+
+    import httpx
+    client = MagicMock(spec=httpx.Client)
+    with patch("onemin._streaming.connect_sse", return_value=ctx):
+        tokens = list(stream_sse(
+            client,
+            "https://api.1min.ai/api/chat-with-ai?isStreaming=true",
+            headers={"API-KEY": "test"},
+            json={"type": "UNIFY_CHAT_WITH_AI"},
+            timeout=30.0,
+        ))
+
+    assert tokens == ["Hel", "lo"]
+
+
+def test_stream_sse_skips_result_event():
+    """stream_sse does not yield tokens for the 'result' event (final aiRecord)."""
+    from onemin._streaming import stream_sse
+
+    events = [
+        FakeSSE(data=json.dumps({"content": "tok"}), event="content"),
+        FakeSSE(data=json.dumps({"aiRecord": {"resultObject": ["tok"]}}), event="result"),
+        FakeSSE(data="", event="done"),
+    ]
+    ctx = make_sync_event_source(events)
+
+    import httpx
+    client = MagicMock(spec=httpx.Client)
+    with patch("onemin._streaming.connect_sse", return_value=ctx):
+        tokens = list(stream_sse(
+            client,
+            "https://api.1min.ai/api/chat-with-ai?isStreaming=true",
+            headers={"API-KEY": "test"},
+            json={"type": "UNIFY_CHAT_WITH_AI"},
+            timeout=30.0,
+        ))
+
+    assert tokens == ["tok"]
+
+
+def test_stream_sse_raises_on_error_event():
+    """stream_sse raises APIError when the server emits an 'error' SSE event."""
+    from onemin._streaming import stream_sse
+    from onemin._exceptions import APIError
+
+    events = [
+        FakeSSE(data="model unavailable", event="error"),
+    ]
+    ctx = make_sync_event_source(events)
+
+    import httpx
+    client = MagicMock(spec=httpx.Client)
+    with patch("onemin._streaming.connect_sse", return_value=ctx):
+        with pytest.raises(APIError):
+            list(stream_sse(
+                client,
+                "https://api.1min.ai/api/chat-with-ai?isStreaming=true",
+                headers={"API-KEY": "test"},
+                json={"type": "UNIFY_CHAT_WITH_AI"},
+                timeout=30.0,
+            ))
 
 
 def test_stream_sse_skips_empty_token():

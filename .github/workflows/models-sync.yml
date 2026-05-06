@@ -1,0 +1,86 @@
+name: models-sync
+
+# Two checks:
+#
+# 1. codegen-fresh: ensures the generated Python/TS constants match
+#    data/models.json. Runs on every push/PR -- no API key needed.
+#
+# 2. validate-live: probes every entry in data/models.json against the live
+#    1min.ai API and fails the run when anything responds UNSUPPORTED_MODEL.
+#    Needs the ONEMIN_API_KEY repository secret. Runs weekly and on demand.
+#
+# When validate-live finds dead entries, fix data/models.json, run
+# `python scripts/sync_models.py`, and commit. There is no automatic PR --
+# kept manual on purpose so a human reviews suggested replacements.
+
+on:
+  push:
+    paths:
+      - "data/models.json"
+      - "scripts/sync_models.py"
+      - "scripts/validate_models.py"
+      - "python/src/onemin/_models_data.py"
+      - "typescript/src/models-data.ts"
+      - ".github/workflows/models-sync.yml"
+  pull_request:
+    paths:
+      - "data/models.json"
+      - "scripts/sync_models.py"
+      - "scripts/validate_models.py"
+      - "python/src/onemin/_models_data.py"
+      - "typescript/src/models-data.ts"
+      - ".github/workflows/models-sync.yml"
+  schedule:
+    # Weekly, Monday 06:00 UTC. Adjust if you want denser/sparser checks.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+jobs:
+  codegen-fresh:
+    name: Generated constants match data/models.json
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run codegen in --check mode
+        run: python scripts/sync_models.py --check
+
+  validate-live:
+    name: Probe every model id against the live API
+    runs-on: ubuntu-latest
+    # Only run when the secret is available. Skipped automatically on PRs from
+    # forks (where secrets are not exposed) and on schedule runs in repos that
+    # haven't configured the secret yet.
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: pip install httpx
+      - name: Validate
+        env:
+          ONEMIN_API_KEY: ${{ secrets.ONEMIN_API_KEY }}
+        run: |
+          if [ -z "$ONEMIN_API_KEY" ]; then
+            echo "ONEMIN_API_KEY secret not configured; skipping live validation."
+            exit 0
+          fi
+          python scripts/validate_models.py
+      - name: Upload JSON report
+        if: always()
+        env:
+          ONEMIN_API_KEY: ${{ secrets.ONEMIN_API_KEY }}
+        run: |
+          if [ -n "$ONEMIN_API_KEY" ]; then
+            python scripts/validate_models.py --json > validation-report.json || true
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: validation-report
+          path: validation-report.json
+          if-no-files-found: ignore

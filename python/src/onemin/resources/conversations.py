@@ -24,7 +24,7 @@ class ConversationResource(BaseResource):
             Raw API response as a dictionary.
 
         Example:
-            response = client.conversation.raw({"title": "Test", "type": "CHAT_WITH_AI", "model": "gpt-4o"})
+            response = client.conversation.raw({"title": "Test", "type": "UNIFY_CHAT_WITH_AI", "model": "gpt-4o"})
             print(response)
         """
         return self._client._request(
@@ -41,7 +41,7 @@ class ConversationResource(BaseResource):
             Raw API response as a dictionary.
 
         Example:
-            response = await client.conversation.araw({"title": "Test", "type": "CHAT_WITH_AI", "model": "gpt-4o"})
+            response = await client.conversation.araw({"title": "Test", "type": "UNIFY_CHAT_WITH_AI", "model": "gpt-4o"})
             print(response)
         """
         return await self._client._request(
@@ -53,7 +53,7 @@ class ConversationResource(BaseResource):
         *,
         title: str = "Untitled",
         model: str = "gpt-4o",
-        conversation_type: str = "CHAT_WITH_AI",
+        conversation_type: str = "UNIFY_CHAT_WITH_AI",
         **kwargs: Any,
     ) -> ConversationResult:
         """Create a new conversation asynchronously.
@@ -61,7 +61,11 @@ class ConversationResource(BaseResource):
         Args:
             title: Conversation title.
             model: Model to use for the conversation.
-            conversation_type: One of CHAT_WITH_AI, CHAT_WITH_IMAGE, CHAT_WITH_PDF.
+            conversation_type: API conversation type. Defaults to
+                "UNIFY_CHAT_WITH_AI" -- the recommended unified flow that
+                handles text, images, files, and YouTube URLs in one shape.
+                Legacy values (CHAT_WITH_IMAGE, CHAT_WITH_PDF,
+                CHAT_WITH_YOUTUBE_VIDEO) are deprecated upstream.
             **kwargs: Extra fields for the request body.
 
         Returns:
@@ -92,7 +96,6 @@ class ConversationResource(BaseResource):
         prompt: str,
         *,
         model: str = "gpt-4o",
-        chat_history: list[dict[str, str]] | None = None,
         **kwargs: Any,
     ) -> ConversationResult:
         """Send a message within an existing conversation asynchronously.
@@ -101,7 +104,6 @@ class ConversationResource(BaseResource):
             conversation_id: ID from a previous acreate() call.
             prompt: The message to send.
             model: Model name.
-            chat_history: Previous messages as [{"role": "user"|"assistant", "message": "..."}].
             **kwargs: Extra fields for promptObject.
 
         Returns:
@@ -113,39 +115,25 @@ class ConversationResource(BaseResource):
             print(reply.content)
         """
         payload: dict[str, Any] = {
-            "type": "CHAT_WITH_AI",
+            "type": "UNIFY_CHAT_WITH_AI",
             "model": model,
-            "conversationId": conversation_id,
             "promptObject": {
                 "prompt": prompt,
-                "chatList": chat_history or [],
+                "conversationId": conversation_id,
                 **kwargs,
             },
         }
         response = await self._client._request(
-            "POST", "/api/features", json=payload, timeout=self._timeout,
+            "POST", "/api/chat-with-ai", json=payload, timeout=self._timeout,
         )
-        ai_record = response.get("aiRecord", {})
-        result_obj = ai_record.get("resultObject", {})
-        content = (
-            result_obj.get("message")
-            or result_obj.get("content")
-            or result_obj.get("text")
-            or str(result_obj)
-        )
-        return ConversationResult(
-            content=content,
-            conversation_id=conversation_id,
-            model=model,
-            metadata=result_obj,
-        )
+        return _parse_conversation_response(response, conversation_id, model)
 
     def create(
         self,
         *,
         title: str = "Untitled",
         model: str = "gpt-4o",
-        conversation_type: str = "CHAT_WITH_AI",
+        conversation_type: str = "UNIFY_CHAT_WITH_AI",
         **kwargs: Any,
     ) -> ConversationResult:
         """Create a new conversation.
@@ -153,7 +141,11 @@ class ConversationResource(BaseResource):
         Args:
             title: Conversation title.
             model: Model to use for the conversation.
-            conversation_type: One of CHAT_WITH_AI, CHAT_WITH_IMAGE, CHAT_WITH_PDF.
+            conversation_type: API conversation type. Defaults to
+                "UNIFY_CHAT_WITH_AI" -- the recommended unified flow that
+                handles text, images, files, and YouTube URLs in one shape.
+                Legacy values (CHAT_WITH_IMAGE, CHAT_WITH_PDF,
+                CHAT_WITH_YOUTUBE_VIDEO) are deprecated upstream.
             **kwargs: Extra fields for the request body.
 
         Returns:
@@ -184,7 +176,6 @@ class ConversationResource(BaseResource):
         prompt: str,
         *,
         model: str = "gpt-4o",
-        chat_history: list[dict[str, str]] | None = None,
         **kwargs: Any,
     ) -> ConversationResult:
         """Send a message within an existing conversation.
@@ -193,7 +184,6 @@ class ConversationResource(BaseResource):
             conversation_id: ID from a previous create() call.
             prompt: The message to send.
             model: Model name.
-            chat_history: Previous messages.
             **kwargs: Extra fields for promptObject.
 
         Returns:
@@ -205,29 +195,52 @@ class ConversationResource(BaseResource):
             print(reply.content)
         """
         payload: dict[str, Any] = {
-            "type": "CHAT_WITH_AI",
+            "type": "UNIFY_CHAT_WITH_AI",
             "model": model,
-            "conversationId": conversation_id,
             "promptObject": {
                 "prompt": prompt,
-                "chatList": chat_history or [],
+                "conversationId": conversation_id,
                 **kwargs,
             },
         }
         response = self._client._request(
-            "POST", "/api/features", json=payload, timeout=self._timeout,
+            "POST", "/api/chat-with-ai", json=payload, timeout=self._timeout,
         )
-        ai_record = response.get("aiRecord", {})
-        result_obj = ai_record.get("resultObject", {})
+        return _parse_conversation_response(response, conversation_id, model)
+
+
+def _parse_conversation_response(
+    response: dict[str, Any],
+    conversation_id: str,
+    model: str,
+) -> ConversationResult:
+    """Build a ConversationResult from a /api/chat-with-ai response.
+
+    Handles both the new ``resultObject`` list-of-strings format and the
+    legacy dict shape.
+    """
+    ai_record = response.get("aiRecord", {})
+    detail = ai_record.get("aiRecordDetail") or {}
+    result_obj = detail.get("resultObject")
+    if result_obj is None:
+        result_obj = ai_record.get("resultObject")
+    if isinstance(result_obj, list):
+        content = "".join(str(c) for c in result_obj)
+        metadata: dict[str, Any] = {"resultObject": result_obj}
+    elif isinstance(result_obj, dict):
         content = (
             result_obj.get("message")
             or result_obj.get("content")
             or result_obj.get("text")
             or str(result_obj)
         )
-        return ConversationResult(
-            content=content,
-            conversation_id=conversation_id,
-            model=model,
-            metadata=result_obj,
-        )
+        metadata = result_obj
+    else:
+        content = "" if result_obj is None else str(result_obj)
+        metadata = {}
+    return ConversationResult(
+        content=content,
+        conversation_id=conversation_id,
+        model=model,
+        metadata=metadata,
+    )

@@ -7,6 +7,7 @@ import {
   InternalServerError,
   ConnectionError,
   TimeoutError,
+  UnsupportedModelError,
 } from './error.js';
 import {
   BASE_URL,
@@ -16,6 +17,50 @@ import {
   RETRYABLE_STATUS_CODES,
   API_KEY_HEADER,
 } from './constants.js';
+import { MODEL_CATALOGUE } from './models-data.js';
+
+const UNSUPPORTED_MODEL_NAME_RE = /Model\s+(\S+?)\s+is not supported/i;
+const MAX_SUGGESTIONS = 6;
+
+function domainForModel(model: string): string | null {
+  for (const [domain, entries] of Object.entries(MODEL_CATALOGUE)) {
+    for (const entry of entries) {
+      if (entry.id === model || entry.constant === model) return domain;
+    }
+  }
+  return null;
+}
+
+function suggestModels(requested: string | null): string[] {
+  const domain = (requested ? domainForModel(requested) : null) ?? 'text';
+  return (MODEL_CATALOGUE[domain] ?? []).slice(0, MAX_SUGGESTIONS).map((m) => m.id);
+}
+
+function maybeUnsupportedModelError(
+  body: string,
+  status: number,
+  requestId: string | undefined,
+): UnsupportedModelError | null {
+  let payload: unknown;
+  try {
+    payload = JSON.parse(body);
+  } catch {
+    return null;
+  }
+  if (!payload || typeof payload !== 'object') return null;
+  const obj = payload as Record<string, unknown>;
+  if (obj.errorCode !== 'UNSUPPORTED_MODEL') return null;
+  const apiMessage = typeof obj.message === 'string' ? obj.message : '';
+  const match = apiMessage.match(UNSUPPORTED_MODEL_NAME_RE);
+  const requested = match ? match[1] : null;
+  const suggestions = suggestModels(requested);
+  const suggestionText = suggestions.length
+    ? ` Try one of: ${suggestions.join(', ')}.`
+    : '';
+  const msg =
+    `${apiMessage} Edit data/models.json and run scripts/sync_models.py if you've added a new model.${suggestionText}`;
+  return new UnsupportedModelError(msg, status, requestId, requested, suggestions);
+}
 
 export interface ClientOptions {
   apiKey?: string;
@@ -109,8 +154,11 @@ export class BaseOneMinClient {
         throw new RateLimitError(body, 429, requestId);
       case 404:
         throw new NotFoundError(body, 404, requestId);
-      case 400:
+      case 400: {
+        const unsupported = maybeUnsupportedModelError(body, 400, requestId);
+        if (unsupported) throw unsupported;
         throw new BadRequestError(body, 400, requestId);
+      }
       default:
         if (status >= 500) {
           throw new InternalServerError(body, status, requestId);

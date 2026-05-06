@@ -61,5 +61,5 @@ class BaseResource:
             Raw API response as a dictionary.
         """
         return self._client._request(
-            "POST", "/api/features", json=payload, timeout=self._timeout,
+            "POST", "/api/chat-with-ai", json=payload, timeout=self._timeout,
         )

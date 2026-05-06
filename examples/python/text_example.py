@@ -13,16 +13,15 @@ client = OneMinClient(api_key=api_key)
 
 # --- Demo 1: Basic chat with default model (gpt-4o) ---
 result = client.text.chat("What is the speed of light in a vacuum?")
-print("=== Basic chat (gpt-4o) ===")
 print(result.content)
 print()
 
 # --- Demo 2: Chat with a specific model via Models constant ---
 result = client.text.chat(
     "Explain recursion in one sentence.",
-    model=Models.Text.CLAUDE_3_5_SONNET,
+    model=Models.Text.CLAUDE_HAIKU,
 )
-print(f"=== Chat with {Models.Text.CLAUDE_3_5_SONNET} ===")
+print(f"=== Chat with {Models.Text.CLAUDE_HAIKU} ===")
 print(result.content)
 print()
 

@@ -210,6 +210,34 @@ Retries use exponential backoff with jitter and respect `Retry-After` headers. D
 
 See [`examples/`](examples/) for complete working scripts covering every domain in both languages.
 
+## CLI Scripts
+
+The [`scripts/`](scripts/) directory contains ready-to-use CLI wrappers for common tasks. They use [`fileman.envars`](https://github.com/yourusername/fileman) to load `.env` files automatically, so you can keep your API key in a project-local `.env` file without exporting it in your shell.
+
+### Setup
+
+Create a `.env` file in the project root:
+
+```bash
+ONEMIN_API_KEY=your-key-here
+```
+
+The scripts load configuration in this priority (system env always wins):
+1. Already-set OS environment variables
+2. `~/.env` (global)
+3. `<project_root>/.env` (local)
+
+### Available scripts
+
+| Script | What it does | Example |
+|--------|-------------|---------|
+| `q.py` | Ask a text question to an LLM | `python scripts/q.py "what is quantum computing?"` |
+| `sum.py` | Summarize text from argument, file, or stdin | `python scripts/sum.py "long text..."` <br> `python scripts/sum.py -f article.txt` <br> `cat report.md \| python scripts/sum.py --stdin` |
+| `img.py` | Generate an image from a prompt | `python scripts/img.py "a futuristic city"` <br> `python scripts/img.py "sunset" -m dall-e-3 -W 512 -H 512` |
+| `speak.py` | Convert text to speech | `python scripts/speak.py "Hello world"` <br> `python scripts/speak.py -f story.txt -v Rachel` |
+
+All scripts support `-k/--api-key` to override the env variable and `-m/--model` to select a specific model.
+
 ## License
 
 MIT

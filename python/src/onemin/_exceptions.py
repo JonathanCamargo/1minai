@@ -60,6 +60,33 @@ class BadRequestError(APIError):
     """Raised when the API returns a 400 Bad Request response."""
 
 
+class UnsupportedModelError(BadRequestError):
+    """Raised when the API rejects a model ID with errorCode UNSUPPORTED_MODEL.
+
+    The error message includes a short list of currently-known alternatives
+    pulled from the generated catalogue (data/models.json) so the user can
+    pick a replacement without leaving the traceback.
+
+    Attributes:
+        requested_model: The rejected model ID (parsed from the API message).
+        suggestions: A list of model IDs from the catalogue, biased toward
+            the same domain as the rejected model when it can be inferred.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        status_code: int,
+        request_id: str | None = None,
+        *,
+        requested_model: str | None = None,
+        suggestions: list[str] | None = None,
+    ) -> None:
+        self.requested_model = requested_model
+        self.suggestions = suggestions or []
+        super().__init__(message, status_code, request_id)
+
+
 class InternalServerError(APIError):
     """Raised when the API returns a 5xx Server Error response."""
 

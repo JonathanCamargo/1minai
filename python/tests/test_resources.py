@@ -299,13 +299,10 @@ def test_asset_domain_name(client: OneMinClient) -> None:
 # ---------------------------------------------------------------------------
 
 def test_text_chat_returns_text_result(client: OneMinClient) -> None:
-    """text.chat('hello') sends CHAT_WITH_AI payload and returns TextResult."""
+    """text.chat('hello') sends UNIFY_CHAT_WITH_AI payload and returns TextResult."""
     mock_response = {
         "aiRecord": {
-            "resultObject": {
-                "message": "Hello there!",
-                "usage": {"tokens": 10},
-            }
+            "resultObject": ["Hello there!"],
         }
     }
     with patch.object(client, "_request", return_value=mock_response):
@@ -317,23 +314,28 @@ def test_text_chat_returns_text_result(client: OneMinClient) -> None:
 
 
 def test_text_chat_sends_correct_payload(client: OneMinClient) -> None:
-    """text.chat() sends type=CHAT_WITH_AI with promptObject.prompt."""
+    """text.chat() POSTs /api/chat-with-ai with type=UNIFY_CHAT_WITH_AI."""
     mock_response = {
-        "aiRecord": {"resultObject": {"message": "Response"}}
+        "aiRecord": {"resultObject": ["Response"]}
     }
+    captured_args: list = []
     captured_kwargs: dict = {}
 
     def capture_request(method, path, **kwargs):
+        captured_args.extend([method, path])
         captured_kwargs.update(kwargs)
         return mock_response
 
     with patch.object(client, "_request", side_effect=capture_request):
         client.text.chat("hello world", model="gpt-4o")
 
+    assert "/api/chat-with-ai" in captured_args
     payload = captured_kwargs.get("json", {})
-    assert payload["type"] == "CHAT_WITH_AI"
+    assert payload["type"] == "UNIFY_CHAT_WITH_AI"
     assert payload["model"] == "gpt-4o"
     assert payload["promptObject"]["prompt"] == "hello world"
+    # chat_history was dropped from the surface API; ensure we no longer send it.
+    assert "chatList" not in payload["promptObject"]
 
 
 def test_text_chat_stream_returns_generator(client: OneMinClient) -> None:
@@ -356,7 +358,7 @@ def test_text_chat_stream_returns_generator(client: OneMinClient) -> None:
 def test_text_chat_default_model_is_gpt4o(client: OneMinClient) -> None:
     """text.chat() defaults to gpt-4o model."""
     mock_response = {
-        "aiRecord": {"resultObject": {"message": "OK"}}
+        "aiRecord": {"resultObject": ["OK"]}
     }
     captured_kwargs: dict = {}
 
@@ -369,6 +371,72 @@ def test_text_chat_default_model_is_gpt4o(client: OneMinClient) -> None:
 
     assert result.model == "gpt-4o"
     assert captured_kwargs["json"]["model"] == "gpt-4o"
+
+
+def test_text_chat_web_search_nests_in_settings(client: OneMinClient) -> None:
+    """text.chat(web_search=True) nests under promptObject.settings.webSearchSettings."""
+    mock_response = {"aiRecord": {"resultObject": ["x"]}}
+    captured_kwargs: dict = {}
+
+    def capture_request(method, path, **kwargs):
+        captured_kwargs.update(kwargs)
+        return mock_response
+
+    with patch.object(client, "_request", side_effect=capture_request):
+        client.text.chat("q", web_search=True)
+
+    settings = captured_kwargs["json"]["promptObject"].get("settings", {})
+    assert settings.get("webSearchSettings", {}).get("webSearch") is True
+
+
+def test_text_chat_parses_legacy_dict_result_object(client: OneMinClient) -> None:
+    """Parser still accepts the older dict-shaped resultObject."""
+    mock_response = {
+        "aiRecord": {"resultObject": {"message": "legacy"}}
+    }
+    with patch.object(client, "_request", return_value=mock_response):
+        result = client.text.chat("hello")
+    assert result.content == "legacy"
+
+
+# ---------------------------------------------------------------------------
+# UnsupportedModelError detection
+# ---------------------------------------------------------------------------
+
+def test_unsupported_model_error_is_raised_with_suggestions() -> None:
+    """A 400 with errorCode UNSUPPORTED_MODEL is promoted to UnsupportedModelError.
+
+    The error attaches the rejected model id and a non-empty suggestion list
+    sourced from the generated catalogue.
+    """
+    import httpx
+    from onemin import OneMinClient, UnsupportedModelError
+
+    body = (
+        '{"errorCode":"UNSUPPORTED_MODEL",'
+        '"message":"Model totally-not-a-model is not supported"}'
+    )
+    client = OneMinClient(api_key="test-key-12345678")
+    fake_response = httpx.Response(status_code=400, text=body)
+    with pytest.raises(UnsupportedModelError) as excinfo:
+        client._handle_response(fake_response)
+    err = excinfo.value
+    assert err.requested_model == "totally-not-a-model"
+    assert err.suggestions, "expected non-empty suggestions"
+    assert "Try one of:" in str(err)
+
+
+def test_other_400_still_maps_to_bad_request_error() -> None:
+    """Non-UNSUPPORTED_MODEL 400s keep their existing BadRequestError mapping."""
+    import httpx
+    from onemin import OneMinClient, BadRequestError, UnsupportedModelError
+
+    body = '{"errorCode":"REQUEST_BODY_VALIDATION_FAILED","message":"bad payload"}'
+    client = OneMinClient(api_key="test-key-12345678")
+    fake_response = httpx.Response(status_code=400, text=body)
+    with pytest.raises(BadRequestError) as excinfo:
+        client._handle_response(fake_response)
+    assert not isinstance(excinfo.value, UnsupportedModelError)
 
 
 # ---------------------------------------------------------------------------
@@ -415,16 +483,14 @@ def test_conversation_create_payload(client: OneMinClient) -> None:
     payload = captured_kwargs.get("json", {})
     assert payload["title"] == "My Chat"
     assert payload["model"] == "claude-3-5-sonnet"
-    assert payload["type"] == "CHAT_WITH_AI"
+    assert payload["type"] == "UNIFY_CHAT_WITH_AI"
 
 
 def test_conversation_send_returns_conversation_result(client: OneMinClient) -> None:
     """conversation.send() sends message within conversation and returns ConversationResult."""
     mock_response = {
         "aiRecord": {
-            "resultObject": {
-                "message": "Follow-up answer",
-            }
+            "resultObject": ["Follow-up answer"],
         }
     }
 
@@ -437,9 +503,9 @@ def test_conversation_send_returns_conversation_result(client: OneMinClient) -> 
 
 
 def test_conversation_send_sends_correct_payload(client: OneMinClient) -> None:
-    """conversation.send() posts to /api/features with conversationId field."""
+    """conversation.send() posts to /api/chat-with-ai with conversationId in promptObject."""
     mock_response = {
-        "aiRecord": {"resultObject": {"message": "Answer"}}
+        "aiRecord": {"resultObject": ["Answer"]}
     }
     captured_args: list = []
     captured_kwargs: dict = {}
@@ -452,8 +518,10 @@ def test_conversation_send_sends_correct_payload(client: OneMinClient) -> None:
     with patch.object(client, "_request", side_effect=capture_request):
         client.conversation.send("conv_id_123", "msg", model="gpt-4o")
 
-    assert "/api/features" in captured_args
+    assert "/api/chat-with-ai" in captured_args
     payload = captured_kwargs.get("json", {})
-    assert payload["conversationId"] == "conv_id_123"
-    assert payload["type"] == "CHAT_WITH_AI"
+    assert payload["type"] == "UNIFY_CHAT_WITH_AI"
     assert payload["promptObject"]["prompt"] == "msg"
+    assert payload["promptObject"]["conversationId"] == "conv_id_123"
+    # conversationId moved into promptObject — no longer at top level.
+    assert "conversationId" not in {k for k in payload if k != "promptObject"}

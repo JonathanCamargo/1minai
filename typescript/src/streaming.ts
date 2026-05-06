@@ -31,14 +31,21 @@ export const MAX_BUFFER_SIZE = 1_048_576;
  * Extract a token string from a parsed SSE JSON payload.
  *
  * Tries multiple known paths in order of priority:
- * 1. OpenAI-style: choices[0].delta.content
- * 2. Simple format: obj.data
- * 3. Fallback: JSON.stringify(obj)
+ * 1. /api/chat-with-ai content event: { content: "text" }
+ * 2. OpenAI-style: choices[0].delta.content
+ * 3. Simple format: obj.data
+ * 4. Fallback: JSON.stringify(obj)
  *
  * @param obj - Parsed JSON object from an SSE data line.
  * @returns Extracted token string. May be empty if the delta had no content.
  */
 export function extractToken(obj: Record<string, unknown>): string {
+  // /api/chat-with-ai content event payload
+  const directContent = obj?.content;
+  if (typeof directContent === 'string') {
+    return directContent;
+  }
+
   // Try OpenAI-style: choices[0].delta.content
   const choices = obj?.choices;
   if (Array.isArray(choices) && choices.length > 0) {
@@ -104,6 +111,11 @@ export async function* streamSSE(
   // JSON buffer: accumulates partial JSON data across SSE chunk boundaries
   let jsonBuffer = '';
 
+  // Most recent SSE event name; reset on event-boundary (blank line). The
+  // /api/chat-with-ai endpoint emits ``content`` (token chunks), ``result``
+  // (final aiRecord), ``done`` (terminator), and ``error`` (failure).
+  let currentEvent = '';
+
   try {
     while (true) {
       const { done, value } = await reader.read();
@@ -126,13 +138,25 @@ export async function* streamSSE(
       lineBuffer = lines.pop() ?? '';
 
       for (const line of lines) {
-        // Skip non-data SSE lines (comments, event:, id:, retry:, empty lines)
-        if (!line.startsWith('data: ')) {
+        // Blank line ends the current event — reset the event name
+        if (line === '' || line === '\r') {
+          currentEvent = '';
           continue;
         }
 
-        // Extract data portion after "data: " prefix
-        const data = line.slice(6);
+        // Track the event name for the next data: line
+        if (line.startsWith('event: ') || line.startsWith('event:')) {
+          currentEvent = line.slice(line.indexOf(':') + 1).trim().toLowerCase();
+          continue;
+        }
+
+        // Only ``data:`` lines carry payload; skip id:, retry:, comments
+        if (!line.startsWith('data: ') && !line.startsWith('data:')) {
+          continue;
+        }
+
+        // Extract data portion after "data:" prefix
+        const data = line.slice(line.indexOf(':') + 1).replace(/^ /, '');
 
         // Empty data string — skip (SSE keepalive)
         if (!data) {
@@ -142,6 +166,20 @@ export async function* streamSSE(
         // [DONE] sentinel — end the stream
         if (data === '[DONE]') {
           return;
+        }
+
+        // Server-emitted error event surfaces as APIError
+        if (currentEvent === 'error') {
+          throw new APIError(data, 0);
+        }
+
+        // ``done`` ends the stream; ``result`` is the final aiRecord
+        // (not a token to yield).
+        if (currentEvent === 'done') {
+          return;
+        }
+        if (currentEvent === 'result') {
+          continue;
         }
 
         // Accumulate for JSON reassembly

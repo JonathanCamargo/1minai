@@ -8,7 +8,10 @@ export interface ChatOptions {
   model?: string;
   stream?: boolean;
   webSearch?: boolean;
-  chatHistory?: Array<{ role: string; message: string }>;
+  /** Number of sites web search should query (only applied when webSearch is true). */
+  numOfSite?: number;
+  /** Maximum words extracted per site (only applied when webSearch is true). */
+  maxWord?: number;
   [key: string]: unknown;
 }
 
@@ -20,9 +23,18 @@ export class TextResource extends BaseResource {
   /**
    * Send a chat/completion request to a language model.
    *
-   * @param prompt - The user message to send.
+   * Hits POST /api/chat-with-ai with type `UNIFY_CHAT_WITH_AI` -- the unified
+   * endpoint that replaces the legacy CHAT_WITH_IMAGE / CHAT_WITH_PDF /
+   * CHAT_WITH_YOUTUBE_VIDEO feature types. Pass `attachments`,
+   * `conversationId`, `settings`, `brandVoiceId`, or `metadata` through
+   * `options` to access the full promptObject schema documented at
+   * https://docs.1min.ai/docs/api/chat-with-ai-api.
+   *
+   * @param prompt - The user message to send. Including a YouTube URL in the
+   *   prompt triggers automatic transcript extraction (max 3 URLs).
    * @param options - Optional parameters: model (default "gpt-4o"), stream,
-   *   webSearch, chatHistory, and any extra fields forwarded to promptObject.
+   *   webSearch, numOfSite, maxWord, plus any promptObject fields
+   *   (`attachments`, `conversationId`, `settings`, etc.).
    * @returns TextResult with content, model name, and optional usage metadata.
    *   When stream is true, returns an AsyncGenerator yielding token strings.
    *
@@ -47,20 +59,23 @@ export class TextResource extends BaseResource {
       model = 'gpt-4o',
       stream = false,
       webSearch = false,
-      chatHistory = [],
+      numOfSite,
+      maxWord,
       ...extra
     } = options;
 
+    const promptObject: Record<string, unknown> = { prompt, ...extra };
+    if (webSearch) {
+      const webSearchSettings: Record<string, unknown> = { webSearch: true };
+      if (numOfSite !== undefined) webSearchSettings.numOfSite = numOfSite;
+      if (maxWord !== undefined) webSearchSettings.maxWord = maxWord;
+      promptObject.settings = { webSearchSettings };
+    }
+
     const payload: Record<string, unknown> = {
-      type: 'CHAT_WITH_AI',
+      type: 'UNIFY_CHAT_WITH_AI',
       model,
-      promptObject: {
-        prompt,
-        isMixed: false,
-        webSearch,
-        chatList: chatHistory,
-        ...extra,
-      },
+      promptObject,
     };
 
     if (stream) {
@@ -69,7 +84,7 @@ export class TextResource extends BaseResource {
 
     const response = await this.client._request<Record<string, unknown>>(
       'POST',
-      '/api/features',
+      '/api/chat-with-ai',
       payload,
       { timeout: this.timeout },
     );
@@ -80,7 +95,7 @@ export class TextResource extends BaseResource {
     payload: Record<string, unknown>,
     _model: string,
   ): Promise<AsyncGenerator<string, void, undefined>> {
-    const url = `${this.client.baseUrl}/api/features?isStreaming=true`;
+    const url = `${this.client.baseUrl}/api/chat-with-ai?isStreaming=true`;
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), this.timeout);
 
@@ -107,11 +122,17 @@ export class TextResource extends BaseResource {
     model: string,
   ): TextResult {
     const aiRecord = (response.aiRecord ?? {}) as Record<string, unknown>;
-    const resultObj = (aiRecord.resultObject ?? {}) as Record<string, unknown>;
-    const content = String(
-      resultObj.message ?? resultObj.content ?? resultObj.text ?? JSON.stringify(resultObj),
-    );
-    const usage = resultObj.usage as Record<string, unknown> | undefined;
-    return { content, model, usage };
+    const detail = (aiRecord.aiRecordDetail ?? {}) as Record<string, unknown>;
+    const resultObj = detail.resultObject ?? aiRecord.resultObject;
+    let content: string;
+    if (Array.isArray(resultObj)) {
+      content = resultObj.map((c) => String(c)).join('');
+    } else if (resultObj && typeof resultObj === 'object') {
+      const r = resultObj as Record<string, unknown>;
+      content = String(r.message ?? r.content ?? r.text ?? JSON.stringify(r));
+    } else {
+      content = resultObj == null ? '' : String(resultObj);
+    }
+    return { content, model };
   }
 }

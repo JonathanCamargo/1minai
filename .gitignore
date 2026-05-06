@@ -1,0 +1,54 @@
+# Dependencies
+node_modules/
+__pycache__/
+.venv/
+venv/
+env/
+ENV/
+
+# Build outputs
+dist/
+build/
+*.egg-info/
+.eggs/
+
+# Lockfiles (keep source lockfiles, ignore local variations if needed)
+# package-lock.json is committed by convention; leave it out of ignore unless desired.
+
+# Python
+*.py[cod]
+*$py.class
+*.so
+.Python
+.pytest_cache/
+.mypy_cache/
+.dmypy.json
+coverage/
+htmlcov/
+.tox/
+.nox/
+
+# TypeScript / Node
+*.tsbuildinfo
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# IDEs / OS
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Local environment files
+.env
+.env.local
+.env.*.local
+
+# Misc
+*.tmp
+*.temp

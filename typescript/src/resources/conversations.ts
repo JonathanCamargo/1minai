@@ -14,7 +14,7 @@ export class ConversationResource extends BaseResource {
    * @returns The raw API response typed as T.
    *
    * @example
-   * const raw = await client.conversation.raw({ title: 'Test', type: 'CHAT_WITH_AI', model: 'gpt-4o' });
+   * const raw = await client.conversation.raw({ title: 'Test', type: 'UNIFY_CHAT_WITH_AI', model: 'gpt-4o' });
    */
   override async raw<T = unknown>(payload: Record<string, unknown>): Promise<T> {
     return this.client._request<T>('POST', '/api/conversations', payload, {
@@ -26,7 +26,9 @@ export class ConversationResource extends BaseResource {
    * Create a new conversation and return its ID.
    *
    * @param options - Optional parameters: title (default "Untitled"), model (default "gpt-4o"),
-   *   conversationType (default "CHAT_WITH_AI"), and any extra fields.
+   *   conversationType (default "UNIFY_CHAT_WITH_AI" -- the recommended unified flow that
+   *   covers text, image, file, and YouTube inputs; legacy CHAT_WITH_IMAGE/CHAT_WITH_PDF/
+   *   CHAT_WITH_YOUTUBE_VIDEO are deprecated upstream), and any extra fields.
    * @returns ConversationResult with conversationId and empty initial content.
    *
    * @example
@@ -42,7 +44,7 @@ export class ConversationResource extends BaseResource {
     const {
       title = 'Untitled',
       model = 'gpt-4o',
-      conversationType = 'CHAT_WITH_AI',
+      conversationType = 'UNIFY_CHAT_WITH_AI',
       ...extra
     } = options;
 
@@ -79,22 +81,20 @@ export class ConversationResource extends BaseResource {
     prompt: string,
     options: {
       model?: string;
-      chatHistory?: Array<{ role: string; message: string }>;
       [key: string]: unknown;
     } = {},
   ): Promise<ConversationResult> {
-    const { model = 'gpt-4o', chatHistory = [], ...extra } = options;
+    const { model = 'gpt-4o', ...extra } = options;
 
     const response = await this.client._request<Record<string, unknown>>(
       'POST',
-      '/api/features',
+      '/api/chat-with-ai',
       {
-        type: 'CHAT_WITH_AI',
+        type: 'UNIFY_CHAT_WITH_AI',
         model,
-        conversationId,
         promptObject: {
           prompt,
-          chatList: chatHistory,
+          conversationId,
           ...extra,
         },
       },
@@ -102,15 +102,26 @@ export class ConversationResource extends BaseResource {
     );
 
     const aiRecord = (response.aiRecord ?? {}) as Record<string, unknown>;
-    const resultObj = (aiRecord.resultObject ?? {}) as Record<string, unknown>;
-    const content = String(
-      resultObj.message ?? resultObj.content ?? resultObj.text ?? JSON.stringify(resultObj),
-    );
+    const detail = (aiRecord.aiRecordDetail ?? {}) as Record<string, unknown>;
+    const resultObj = detail.resultObject ?? aiRecord.resultObject;
+    let content: string;
+    let metadata: Record<string, unknown>;
+    if (Array.isArray(resultObj)) {
+      content = resultObj.map((c) => String(c)).join('');
+      metadata = { resultObject: resultObj };
+    } else if (resultObj && typeof resultObj === 'object') {
+      const r = resultObj as Record<string, unknown>;
+      content = String(r.message ?? r.content ?? r.text ?? JSON.stringify(r));
+      metadata = r;
+    } else {
+      content = resultObj == null ? '' : String(resultObj);
+      metadata = {};
+    }
     return {
       content,
       conversationId,
       model,
-      metadata: resultObj,
+      metadata,
     };
   }
 }

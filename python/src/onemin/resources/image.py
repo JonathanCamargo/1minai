@@ -20,12 +20,15 @@ from __future__ import annotations
 from typing import Any, Union
 
 from onemin._file_upload import FileInput, upload_file
+from onemin._models_data import Models
 from onemin._polling import poll_job
 from onemin.models import ImageResult
 from onemin.resources._base_resource import BaseResource
 
-# Midjourney model UUID — triggers async job polling instead of direct result
-MIDJOURNEY_MODEL = "5c232a9e-9061-4777-980a-ddc8e65647c6"
+# Midjourney triggers async job polling instead of returning a direct result.
+# Source the UUID from the generated catalogue so it stays in lockstep with
+# data/models.json.
+MIDJOURNEY_MODEL = Models.Image.MIDJOURNEY
 
 # ImageInput accepts either a file (for upload) or an HTTP URL string (used as-is)
 ImageInput = Union[FileInput, str]

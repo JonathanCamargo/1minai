@@ -5,8 +5,10 @@ per-request timeout overrides, connection pooling via a single shared httpx.Clie
 instance, and API key redaction in all public representations.
 """
 
+import json
 import os
 import random
+import re
 import time
 from typing import Any
 
@@ -29,7 +31,71 @@ from onemin._exceptions import (
     NotFoundError,
     RateLimitError,
     TimeoutError,
+    UnsupportedModelError,
 )
+from onemin._models_data import MODEL_CATALOGUE
+
+# API returns "Model X is not supported" -- this regex pulls X back out so
+# we can suggest alternatives from the same domain.
+_UNSUPPORTED_MODEL_NAME_RE = re.compile(r"Model\s+(\S+?)\s+is not supported", re.IGNORECASE)
+_MAX_SUGGESTIONS = 6
+
+
+def _domain_for_model(model: str) -> str | None:
+    """Return the domain ('text', 'image', ...) the requested model belongs to, or None."""
+    for domain, entries in MODEL_CATALOGUE.items():
+        for entry in entries:
+            if entry["id"] == model or entry["constant"] == model:
+                return domain
+    return None
+
+
+def _suggest_models(requested: str | None) -> list[str]:
+    """Return up to ``_MAX_SUGGESTIONS`` candidate model ids.
+
+    If we can identify the domain of the requested model, suggest only from
+    that domain; otherwise suggest text models (the most common case).
+    """
+    domain = _domain_for_model(requested) if requested else None
+    if domain is None:
+        domain = "text"
+    return [entry["id"] for entry in MODEL_CATALOGUE.get(domain, [])][:_MAX_SUGGESTIONS]
+
+
+def _maybe_unsupported_model_error(
+    body_text: str,
+    status_code: int,
+    request_id: str | None,
+) -> UnsupportedModelError | None:
+    """Promote a generic 400 to UnsupportedModelError when the body matches.
+
+    Returns None when the body isn't an UNSUPPORTED_MODEL error so the caller
+    falls back to BadRequestError.
+    """
+    try:
+        payload = json.loads(body_text)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("errorCode") != "UNSUPPORTED_MODEL":
+        return None
+    api_message = payload.get("message", "")
+    match = _UNSUPPORTED_MODEL_NAME_RE.search(api_message)
+    requested = match.group(1) if match else None
+    suggestions = _suggest_models(requested)
+    suggestion_text = f" Try one of: {', '.join(suggestions)}." if suggestions else ""
+    msg = (
+        f"{api_message} Edit data/models.json and run scripts/sync_models.py "
+        f"if you've added a new model.{suggestion_text}"
+    )
+    return UnsupportedModelError(
+        msg,
+        status_code,
+        request_id,
+        requested_model=requested,
+        suggestions=suggestions,
+    )
 
 
 class BaseOneMinClient:
@@ -190,6 +256,9 @@ class BaseOneMinClient:
         elif status == 404:
             raise NotFoundError(response.text, 404, request_id)
         elif status == 400:
+            unsupported = _maybe_unsupported_model_error(response.text, 400, request_id)
+            if unsupported is not None:
+                raise unsupported
             raise BadRequestError(response.text, 400, request_id)
         elif status >= 500:
             raise InternalServerError(response.text, status, request_id)

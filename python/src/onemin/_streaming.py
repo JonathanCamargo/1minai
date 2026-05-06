@@ -28,16 +28,24 @@ from typing import Any, AsyncGenerator, Generator
 import httpx
 from httpx_sse import connect_sse, aconnect_sse
 
+from onemin._exceptions import APIError
+
 MAX_BUFFER_SIZE = 1_048_576  # 1 MB — cap to prevent memory exhaustion on malformed data
+
+# Event names that don't carry a token to yield. ``done`` and ``result`` end the
+# stream metadata; ``error`` is raised by the caller. Anything else (including
+# the SSE default ``message``) flows through the JSON parser.
+_NON_TOKEN_EVENTS = frozenset({"done", "result"})
 
 
 def _extract_token(obj: dict[str, Any]) -> str:
     """Extract the token string from a parsed SSE JSON payload.
 
     Tries multiple known paths in order of priority:
-    1. OpenAI-style: choices[0].delta.content
-    2. Simple format: obj["data"]
-    3. Fallback: str(obj)
+    1. /api/chat-with-ai content event: ``{"content": "text"}``
+    2. OpenAI-style: ``choices[0].delta.content``
+    3. Simple format: ``obj["data"]``
+    4. Fallback: ``str(obj)``
 
     Args:
         obj: Parsed JSON object from an SSE data line.
@@ -45,13 +53,21 @@ def _extract_token(obj: dict[str, Any]) -> str:
     Returns:
         Extracted token string. May be empty if the delta contained no content.
     """
+    # /api/chat-with-ai content event payload
+    content = obj.get("content")
+    if isinstance(content, str):
+        if content:
+            return content
+        # Empty string explicitly present — let caller skip
+        return ""
+
     # Try OpenAI-style: choices[0].delta.content
     choices = obj.get("choices")
     if choices and isinstance(choices, list) and len(choices) > 0:
         delta = choices[0].get("delta", {})
-        content = delta.get("content", "")
-        if content:
-            return content
+        delta_content = delta.get("content", "")
+        if delta_content:
+            return delta_content
         # choices structure was present but content was empty — return empty
         # rather than falling through to data or fallback
         data = obj.get("data")
@@ -107,6 +123,16 @@ def stream_sse(
             # Skip empty data lines (SSE keepalives per spec)
             if not sse.data:
                 continue
+
+            # /api/chat-with-ai emits ``done`` and ``result`` events that don't
+            # carry a token; ``error`` events surface as APIError.
+            event = (sse.event or "").lower()
+            if event in _NON_TOKEN_EVENTS:
+                if event == "done":
+                    return
+                continue
+            if event == "error":
+                raise APIError(sse.data, status_code=0)
 
             # Accumulate data (handles partial JSON across chunk boundaries)
             data_buffer += sse.data
@@ -165,6 +191,14 @@ async def astream_sse(
             # Skip empty data lines (SSE keepalives per spec)
             if not sse.data:
                 continue
+
+            event = (sse.event or "").lower()
+            if event in _NON_TOKEN_EVENTS:
+                if event == "done":
+                    return
+                continue
+            if event == "error":
+                raise APIError(sse.data, status_code=0)
 
             # Accumulate data (handles partial JSON across chunk boundaries)
             data_buffer += sse.data

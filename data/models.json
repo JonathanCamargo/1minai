@@ -1,0 +1,57 @@
+{
+  "$comment": "Single source of truth for the 1min.ai SDK model catalogue. Hand-edited; both Python and TypeScript constants are generated from this file by scripts/sync_models.py. Live availability is verified by scripts/validate_models.py against the upstream API. Do not list a model here unless the validator can confirm it -- entries that 1min.ai removed must be deleted, not commented out.",
+  "version": 1,
+  "domains": {
+    "text": {
+      "endpoint": "/api/chat-with-ai",
+      "feature_type": "UNIFY_CHAT_WITH_AI",
+      "models": [
+        { "constant": "GPT_4O",           "id": "gpt-4o",                            "provider": "openai",   "label": "GPT-4o" },
+        { "constant": "GPT_4O_MINI",      "id": "gpt-4o-mini",                       "provider": "openai",   "label": "GPT-4o Mini" },
+        { "constant": "GPT_4_TURBO",      "id": "gpt-4-turbo",                       "provider": "openai",   "label": "GPT-4 Turbo" },
+        { "constant": "GPT_3_5_TURBO",    "id": "gpt-3.5-turbo",                     "provider": "openai",   "label": "GPT-3.5 Turbo" },
+        { "constant": "O3_MINI",          "id": "o3-mini",                           "provider": "openai",   "label": "o3 Mini" },
+        { "constant": "CLAUDE_SONNET_4",  "id": "claude-sonnet-4-20250514",          "provider": "anthropic","label": "Claude Sonnet 4" },
+        { "constant": "CLAUDE_HAIKU_4_5", "id": "claude-haiku-4-5-20251001",         "provider": "anthropic","label": "Claude Haiku 4.5" },
+        { "constant": "GEMINI_2_5_FLASH", "id": "gemini-2.5-flash",                  "provider": "google",   "label": "Gemini 2.5 Flash" },
+        { "constant": "MISTRAL_LARGE",    "id": "mistral-large-latest",              "provider": "mistral",  "label": "Mistral Large" },
+        { "constant": "MISTRAL_SMALL",    "id": "mistral-small-latest",              "provider": "mistral",  "label": "Mistral Small" },
+        { "constant": "LLAMA_3_70B",      "id": "meta/meta-llama-3-70b-instruct",    "provider": "meta",     "label": "Llama 3 70B Instruct" },
+        { "constant": "DEEPSEEK_CHAT",    "id": "deepseek-chat",                     "provider": "deepseek", "label": "DeepSeek Chat" }
+      ]
+    },
+    "image": {
+      "endpoint": "/api/features",
+      "feature_type": "IMAGE_GENERATOR",
+      "models": [
+        { "constant": "MIDJOURNEY",            "id": "5c232a9e-9061-4777-980a-ddc8e65647c6", "provider": "midjourney","label": "Midjourney", "tags": ["polled"] },
+        { "constant": "DALL_E_3",              "id": "dall-e-3",                              "provider": "openai",     "label": "DALL-E 3" },
+        { "constant": "DALL_E_2",              "id": "dall-e-2",                              "provider": "openai",     "label": "DALL-E 2" },
+        { "constant": "STABLE_DIFFUSION_XL",   "id": "stable-diffusion-xl-1024-v1-0",         "provider": "stability",  "label": "Stable Diffusion XL 1024" },
+        { "constant": "STABLE_DIFFUSION_768",  "id": "stable-diffusion-v1-6",                 "provider": "stability",  "label": "Stable Diffusion v1.6" },
+        { "constant": "STABLE_IMAGE",          "id": "stable-image",                          "provider": "stability",  "label": "Stable Image (editing)" },
+        { "constant": "LEONARDO_DIFFUSION_XL", "id": "1e60896f-3c26-4296-8ecc-53e2afecc132", "provider": "leonardo",   "label": "Leonardo Diffusion XL" },
+        { "constant": "LEONARDO_KINO_XL",      "id": "aa77f04e-3eec-4034-9c07-d0f619684628", "provider": "leonardo",   "label": "Leonardo Kino XL" }
+      ]
+    },
+    "audio": {
+      "endpoint": "/api/features",
+      "feature_type": "TEXT_TO_SPEECH",
+      "models": [
+        { "constant": "TTS_1",          "id": "tts-1",          "provider": "openai",     "label": "OpenAI TTS-1", "tags": ["tts"] },
+        { "constant": "TTS_1_HD",       "id": "tts-1-hd",       "provider": "openai",     "label": "OpenAI TTS-1 HD", "tags": ["tts"] },
+        { "constant": "ELEVENLABS_TTS", "id": "elevenlabs-tts", "provider": "elevenlabs", "label": "ElevenLabs TTS", "tags": ["tts"] },
+        { "constant": "GOOGLE_TTS",     "id": "google-tts",     "provider": "google",     "label": "Google TTS", "tags": ["tts"] },
+        { "constant": "WHISPER_1",      "id": "whisper-1",      "provider": "openai",     "label": "Whisper-1", "tags": ["stt"], "feature_type": "SPEECH_TO_TEXT" },
+        { "constant": "UDIO",           "id": "music-u",        "provider": "udio",       "label": "Udio (music)", "tags": ["music"], "feature_type": "MUSIC_GENERATOR" }
+      ]
+    },
+    "video": {
+      "endpoint": "/api/features",
+      "feature_type": "TEXT_TO_VIDEO",
+      "models": [
+        { "constant": "KLING", "id": "kling", "provider": "kuaishou", "label": "Kling" }
+      ]
+    }
+  }
+}
