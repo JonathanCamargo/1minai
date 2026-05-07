@@ -4,13 +4,12 @@ import argparse
 import os
 import sys
 from pathlib import Path
-
 from fileman.envars import load_env
 from onemin import OneMinClient, Models
 
 
 # Load env vars: system env → ~/.env → <project_root>/.env (system wins)
-load_env()
+load_env(project_env=Path(__file__).parent / ".." / ".env")
 
 
 def _read_input(args: argparse.Namespace) -> str:
