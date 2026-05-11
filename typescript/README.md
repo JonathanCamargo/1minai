@@ -4,8 +4,16 @@ TypeScript SDK for the 1min.ai API — one key, 25+ AI capabilities.
 
 ## Installation
 
+This package is not yet on npm. Install directly from GitHub:
+
 ```bash
-npm install onemin
+npm install github:JonathanCamargo/1minai#typescript
+```
+
+If you have already cloned the repo locally, install from the filesystem from the repo root:
+
+```bash
+npm install file:./typescript
 ```
 
 ## Quick Start

@@ -6,16 +6,30 @@ Generate images, edit photos, chat with LLMs, transcribe audio, create music, ge
 
 ## Install
 
+This package is not yet on PyPI / npm. Install directly from GitHub:
+
 **Python** (3.10+):
 
 ```bash
-pip install onemin
+pip install git+https://github.com/JonathanCamargo/1minai.git#subdirectory=python
 ```
 
 **TypeScript** (Node 18+):
 
 ```bash
-npm install @onemin/sdk
+npm install github:JonathanCamargo/1minai#typescript
+```
+
+Or, if you have already cloned the repo locally:
+
+**Python** — from the repo root:
+```bash
+pip install -e ./python
+```
+
+**TypeScript** — from the repo root:
+```bash
+npm install file:./typescript
 ```
 
 ## Quick start
