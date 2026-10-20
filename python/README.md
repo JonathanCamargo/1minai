@@ -4,8 +4,16 @@ Python SDK for the 1min.ai API — one key, 25+ AI capabilities.
 
 ## Installation
 
+This package is not yet on PyPI. Install directly from GitHub:
+
 ```bash
-pip install onemin
+pip install git+https://github.com/JonathanCamargo/1minai.git#subdirectory=python
+```
+
+If you have already cloned the repo locally, install in editable mode from the repo root:
+
+```bash
+pip install -e ./python
 ```
 
 ## Quick Start
