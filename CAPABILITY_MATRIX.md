@@ -2,7 +2,7 @@
 
 Tracks feature parity between Python and TypeScript SDK implementations.
 
-**Status legend:** done = fully implemented and tested | - = not applicable
+**Status legend:** done = fully implemented and tested | - = not applicable | stale = implemented against request/response shapes the live API no longer accepts
 
 ## Infrastructure
 
@@ -18,6 +18,7 @@ Tracks feature parity between Python and TypeScript SDK implementations.
 | API key redaction | done | done |
 | Dual ESM+CJS output | - | done |
 | Model constants | done | done |
+| Per-feature defaults (DEFAULT_MODELS / FEATURE_MODELS) | done | generated, not yet used |
 
 ## Transport
 
@@ -27,7 +28,7 @@ Tracks feature parity between Python and TypeScript SDK implementations.
 | Async HTTP client | done | done (native) |
 | SSE streaming | done (sync+async) | done (async) |
 | File upload | done (sync+async) | done (async) |
-| Auto-polling (jobs) | done (sync+async) | done (async) |
+| Auto-polling (GET /api/results) | done (sync+async) | stale (polls /api/jobs) |
 
 ## Domain Resources
 
@@ -36,28 +37,28 @@ Tracks feature parity between Python and TypeScript SDK implementations.
 | **Text** | | |
 | text.chat() | done | done |
 | **Image** | | |
-| image.generate() | done | done |
-| image.to_prompt() / toPrompt() | done | done |
-| image.variation() | done | done |
-| image.upscale() | done | done |
-| image.extend() | done | done |
-| image.remove_background() / removeBackground() | done | done |
-| image.replace_background() / replaceBackground() | done | done |
-| image.remove_text() / removeText() | done | done |
-| image.remove_object() / removeObject() | done | done |
-| image.search_and_replace() / searchAndReplace() | done | done |
-| image.inpaint() | done | done |
-| image.edit_text() / editText() | done | done |
-| image.swap_face() / swapFace() | done | done |
-| image.generate_3d() / generate3d() | done | done |
+| image.generate() | done | stale |
+| image.to_prompt() / toPrompt() | done | stale |
+| image.variation() | done | stale |
+| image.upscale() | done | stale |
+| image.extend() | done | stale |
+| image.remove_background() / removeBackground() | done | stale |
+| image.replace_background() / replaceBackground() | done | stale |
+| image.remove_text() / removeText() | done | stale |
+| image.remove_object() / removeObject() | done | stale |
+| image.search_and_replace() / searchAndReplace() | done | stale |
+| image.inpaint() | done | stale |
+| image.edit() (TS: editText(), old shape) | done | stale |
+| image.swap_face() / swapFace() | done | stale |
+| image.generate_3d() / generate3d() | done | stale |
 | **Audio** | | |
-| audio.speak() | done | done |
-| audio.transcribe() | done | done |
-| audio.translate() | done | done |
-| audio.generate_music() / generateMusic() | done | done |
+| audio.speak() | done | stale |
+| audio.transcribe() | done | stale |
+| audio.translate() | done | stale |
+| audio.generate_music() / generateMusic() | done | stale |
 | **Video** | | |
-| video.generate() | done | done |
-| video.from_image() / fromImage() | done | done |
+| video.generate() | done | stale |
+| video.from_image() / fromImage() | done | stale |
 | **Writing** | | |
 | writing.keyword_research() / keywordResearch() | done | done |
 | writing.blog_article() / blogArticle() | done | done |
@@ -79,4 +80,4 @@ Tracks feature parity between Python and TypeScript SDK implementations.
 
 ---
 
-*Last updated: v1.0 milestone complete — full parity across all domains*
+*Last updated: 2026-10-01 — Python image/audio/video rewritten against the live API (per-feature defaults, asset keys, result polling). TypeScript still uses the old shapes for those domains and for asset/conversation ids.*

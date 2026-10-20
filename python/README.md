@@ -23,7 +23,7 @@ print(result.content)
 | Domain | Methods | Description |
 |--------|---------|-------------|
 | text | `chat` | Text generation and chat with any LLM; supports streaming |
-| image | `generate`, `upscale`, `remove_background`, `replace_background`, `remove_text`, `remove_object`, `search_and_replace`, `inpaint`, `variation`, `extend`, `to_prompt`, `edit_text`, `swap_face`, `generate_3d` | Image generation (14 methods) and editing |
+| image | `generate`, `upscale`, `remove_background`, `replace_background`, `remove_text`, `remove_object`, `search_and_replace`, `inpaint`, `variation`, `extend`, `to_prompt`, `edit`, `swap_face`, `generate_3d` | Image generation (14 methods) and editing |
 | audio | `speak`, `transcribe`, `translate`, `generate_music` | Text-to-speech, speech-to-text, and music generation |
 | video | `generate`, `from_image` | Text-to-video and image-to-video (auto-polls for completion) |
 | writing | `summarize`, `translate`, `rewrite`, `expand`, `shorten`, `paraphrase`, `check_grammar`, `blog_article`, `keyword_research`, `summarize_youtube` | 10 writing assistance methods |
@@ -43,19 +43,19 @@ client = OneMinClient()
 
 # Text models
 result = client.text.chat("Hello", model=Models.Text.GPT_4O)
-result = client.text.chat("Hello", model=Models.Text.CLAUDE_3_5_SONNET)
-result = client.text.chat("Hello", model=Models.Text.GEMINI_1_5_PRO)
+result = client.text.chat("Hello", model=Models.Text.CLAUDE_SONNET_5)
+result = client.text.chat("Hello", model=Models.Text.GEMINI_2_5_PRO)
 
 # Image models
-result = client.image.generate("a cat", model=Models.Image.DALL_E_3)
-result = client.image.generate("a cat", model=Models.Image.FLUX_SCHNELL)
+result = client.image.generate("a cat", model=Models.Image.STABLE_DIFFUSION_XL)
+result = client.image.generate("a cat", model=Models.Image.FLUX_DEV)
 
 # Audio models
 result = client.audio.speak("Hello", model=Models.Audio.TTS_1_HD)
 result = client.audio.transcribe("audio.mp3", model=Models.Audio.WHISPER_1)
 
 # Video models
-result = client.video.generate("sunset", model=Models.Video.LUMA_AI)
+result = client.video.generate("sunset", model=Models.Video.KLING)
 ```
 
 All `Models.*` values are plain strings accepted directly by the 1min.ai API.

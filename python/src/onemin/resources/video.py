@@ -1,316 +1,174 @@
 """Video domain resource for the 1min.ai API.
 
-Domain timeout: 300s (per INFRA-07) — video generation is the most time-intensive
-operation and can take several minutes to complete.
+Domain timeout: 300s (per INFRA-07).
 
-Provides 2 methods:
-- generate: text-to-video using Luma AI, Kling, AnimateDiff, Tongyi
-- from_image: image-to-video using Luma AI, Kling
+Provides 2 public methods: generate (text to video) and from_image (image to
+video), plus async twins prefixed with ``a``.
 
-Both methods auto-poll for completion since all video models are async.
+Video jobs outlive the HTTP gateway timeout, so requests are sent with
+``"async": true`` and the result is polled from /api/results/{uuid} until it
+finishes.
+
+Every method works with any model the API lists for its feature (see
+``FEATURE_MODELS``). ``model=None`` picks ``DEFAULT_MODELS[feature]``, and the
+fields that default model requires are filled in for you. Other models take
+their own fields -- pass them as keyword arguments; they go into promptObject
+unchanged. Field reference per model: https://docs.1min.ai/docs/api/intro
 """
 
 from __future__ import annotations
 
 from typing import Any, Optional, Union
 
-from onemin.resources._base_resource import BaseResource
+from onemin._file_upload import FileInput
 from onemin.models import VideoResult
-from onemin._file_upload import FileInput, upload_file
-from onemin._polling import poll_job
+from onemin.resources._base_resource import BaseResource, feature_payload, result_items
+
+_KLING = {"duration": 5, "mode": "std", "version": "1.6", "aspect_ratio": "16:9"}
+
+# Fields each default model requires, keyed by (feature, model). Only applied
+# when that exact model is used; caller keyword arguments override them.
+_MODEL_DEFAULTS: dict[tuple[str, str], dict[str, Any]] = {
+    ("TEXT_TO_VIDEO", "kling"): _KLING,
+    ("IMAGE_TO_VIDEO", "kling"): _KLING,
+}
+
+
+def _video_payload(
+    feature: str,
+    model: str | None,
+    fields: dict[str, Any],
+    duration: Optional[int],
+    aspect_ratio: Optional[str],
+    kwargs: dict[str, Any],
+) -> tuple[dict[str, Any], str]:
+    if duration is not None:
+        fields["duration"] = duration
+    if aspect_ratio is not None:
+        fields["aspect_ratio"] = aspect_ratio
+    payload, model = feature_payload(feature, model, {**fields, **kwargs}, _MODEL_DEFAULTS)
+    payload["conversationId"] = feature
+    return payload, model
+
+
+def _parse_video_result(ai_record: dict[str, Any], model: str) -> VideoResult:
+    keys = [str(i) for i in result_items(ai_record)]
+    return VideoResult(
+        url=ai_record.get("temporaryUrl") or "",
+        keys=keys or None,
+        model=model,
+        metadata=ai_record,
+    )
 
 
 class VideoResource(BaseResource):
     """Video generation operations.
 
-    Domain timeout: 300s (per INFRA-07) — longest timeout due to
-    video generation duration.
-
-    Both methods auto-poll for completion since all video models are asynchronous.
-
-    Example::
-
-        client.video.generate("sunset over the ocean", model="luma-ai")
-        client.video.from_image("/path/to/photo.jpg", "animate the scene")
+    Domain timeout: 300s (per INFRA-07).
     """
 
     _domain = "video"
-
-    def _upload(self, file: Union[FileInput, str]) -> str:
-        """Upload a file or return URL if already a remote URL.
-
-        Args:
-            file: A file path, bytes, (filename, bytes) tuple, or HTTP URL string.
-
-        Returns:
-            URL string pointing to the uploaded (or existing) asset.
-        """
-        if isinstance(file, str) and file.startswith("http"):
-            return file
-        return upload_file(
-            self._client._client,
-            self._client._base_url,
-            self._client._api_key,
-            file,  # type: ignore[arg-type]
-        )
-
-    async def _aupload(self, file: Union[FileInput, str]) -> str:
-        """Async upload a file or return URL if already a remote URL."""
-        if isinstance(file, str) and file.startswith("http"):
-            return file
-        from onemin._file_upload import async_upload_file
-        return await async_upload_file(
-            self._client._http,
-            self._client._base_url,
-            self._client._api_key,
-            file,  # type: ignore[arg-type]
-        )
-
-    async def _apoll_and_parse(self, response: dict[str, Any], model: str) -> VideoResult:
-        """Async poll for async job completion and parse the video result.
-
-        Args:
-            response: Initial API response containing aiRecord.id.
-            model: Model name for the VideoResult.
-
-        Returns:
-            VideoResult with url and metadata from the completed job.
-        """
-        from onemin._polling import apoll_job
-        ai_record = response.get("aiRecord", {})
-        job_id = ai_record.get("id") or ai_record.get("jobId") or response.get("id", "")
-
-        result = await apoll_job(
-            self._client._http,
-            self._client._base_url,
-            self._client._api_key,
-            str(job_id),
-        )
-
-        url = (
-            result.get("result")
-            or (result.get("output", {}) or {}).get("url")
-            or result.get("url")
-            or ""
-        )
-
-        return VideoResult(url=str(url), model=model, metadata=result)
-
-    async def agenerate(
-        self,
-        prompt: str,
-        *,
-        model: str = "luma-ai",
-        duration: Optional[int] = None,
-        aspect_ratio: Optional[str] = None,
-        **kwargs: Any,
-    ) -> VideoResult:
-        """Async version of generate().
-
-        All video generation models are asynchronous — this method automatically
-        polls until completion and returns the final VideoResult.
-
-        Args:
-            prompt: Text description of the video to generate.
-            model: Video model. Options: 'luma-ai', 'kling', 'animate-diff',
-                   'tongyi'. Default: 'luma-ai'.
-            duration: Optional video duration in seconds (e.g., 5).
-            aspect_ratio: Optional aspect ratio (e.g., '16:9', '9:16', '1:1').
-            **kwargs: Additional model parameters passed to the API.
-
-        Returns:
-            VideoResult with url pointing to the generated video file.
-
-        Example:
-            result = await client.video.agenerate("sunset over the ocean")
-            print(result.url)
-        """
-        prompt_object: dict[str, Any] = {"prompt": prompt}
-        if duration is not None:
-            prompt_object["duration"] = duration
-        if aspect_ratio is not None:
-            prompt_object["aspectRatio"] = aspect_ratio
-        prompt_object.update(kwargs)
-
-        payload = {
-            "type": "TEXT_TO_VIDEO",
-            "model": model,
-            "promptObject": prompt_object,
-        }
-
-        response = await self._client._request(
-            "POST", "/api/features", json=payload, timeout=self._timeout
-        )
-
-        return await self._apoll_and_parse(response, model)
-
-    async def afrom_image(
-        self,
-        image: Union[FileInput, str],
-        prompt: str = "",
-        *,
-        model: str = "luma-ai",
-        **kwargs: Any,
-    ) -> VideoResult:
-        """Async version of from_image().
-
-        All video generation models are asynchronous — this method automatically
-        polls until completion and returns the final VideoResult.
-
-        Args:
-            image: Source image as a file path, bytes, (filename, bytes) tuple,
-                   or HTTP URL pointing to an already-uploaded image.
-            prompt: Optional text description to guide the animation.
-            model: Video model. Options: 'luma-ai', 'kling'. Default: 'luma-ai'.
-            **kwargs: Additional model parameters passed to the API.
-
-        Returns:
-            VideoResult with url pointing to the generated video file.
-
-        Example:
-            result = await client.video.afrom_image("photo.jpg", "animate the scene")
-            print(result.url)
-        """
-        image_url = await self._aupload(image)
-
-        prompt_object: dict[str, Any] = {
-            "prompt": prompt,
-            "imageUrl": image_url,
-            **kwargs,
-        }
-
-        payload = {
-            "type": "IMAGE_TO_VIDEO",
-            "model": model,
-            "promptObject": prompt_object,
-        }
-
-        response = await self._client._request(
-            "POST", "/api/features", json=payload, timeout=self._timeout
-        )
-
-        return await self._apoll_and_parse(response, model)
-
-    def _poll_and_parse(self, response: dict[str, Any], model: str) -> VideoResult:
-        """Poll for async job completion and parse the video result.
-
-        Args:
-            response: Initial API response containing aiRecord.id.
-            model: Model name for the VideoResult.
-
-        Returns:
-            VideoResult with url and metadata from the completed job.
-        """
-        ai_record = response.get("aiRecord", {})
-        job_id = ai_record.get("id") or ai_record.get("jobId") or response.get("id", "")
-
-        result = poll_job(
-            self._client._client,
-            self._client._base_url,
-            self._client._api_key,
-            str(job_id),
-        )
-
-        url = (
-            result.get("result")
-            or (result.get("output", {}) or {}).get("url")
-            or result.get("url")
-            or ""
-        )
-
-        return VideoResult(url=str(url), model=model, metadata=result)
 
     def generate(
         self,
         prompt: str,
         *,
-        model: str = "luma-ai",
+        model: str | None = None,
         duration: Optional[int] = None,
         aspect_ratio: Optional[str] = None,
         **kwargs: Any,
     ) -> VideoResult:
-        """Generate a video from a text prompt.
-
-        All video generation models are asynchronous — this method automatically
-        polls until completion and returns the final VideoResult.
+        """Generate a video from a text prompt, waiting until it is ready.
 
         Args:
-            prompt: Text description of the video to generate.
-            model: Video model. Options: 'luma-ai', 'kling', 'animate-diff',
-                   'tongyi'. Default: 'luma-ai'.
-            duration: Optional video duration in seconds (e.g., 5).
-            aspect_ratio: Optional aspect ratio (e.g., '16:9', '9:16', '1:1').
-            **kwargs: Additional model parameters passed to the API.
+            prompt: Description of the video.
+            model: Model id; defaults to ``DEFAULT_MODELS["TEXT_TO_VIDEO"]``
+                (Kling).
+            duration: Length in seconds (Kling: 5 or 10).
+            aspect_ratio: e.g. "16:9", "9:16", "1:1".
+            **kwargs: Extra promptObject fields (Kling: ``mode``, ``version``,
+                ``negative_prompt``, ``cfg_scale``).
 
         Returns:
-            VideoResult with url pointing to the generated video file.
+            VideoResult: ``url`` is a temporary download link.
 
         Example:
-            result = client.video.generate("sunset over the ocean")
-            print(result.url)
+            result = client.video.generate("a sunset over the ocean")
+            client.video.download(result, "sunset.mp4")
         """
-        prompt_object: dict[str, Any] = {"prompt": prompt}
-        if duration is not None:
-            prompt_object["duration"] = duration
-        if aspect_ratio is not None:
-            prompt_object["aspectRatio"] = aspect_ratio
-        prompt_object.update(kwargs)
-
-        payload = {
-            "type": "TEXT_TO_VIDEO",
-            "model": model,
-            "promptObject": prompt_object,
-        }
-
-        response = self._client._request(
-            "POST", "/api/features", json=payload, timeout=self._timeout
+        payload, model = _video_payload(
+            "TEXT_TO_VIDEO", model, {"prompt": prompt}, duration, aspect_ratio, kwargs
         )
-
-        return self._poll_and_parse(response, model)
+        return _parse_video_result(self._call_feature(payload, background=True), model)
 
     def from_image(
         self,
         image: Union[FileInput, str],
         prompt: str = "",
         *,
-        model: str = "luma-ai",
+        model: str | None = None,
+        duration: Optional[int] = None,
+        aspect_ratio: Optional[str] = None,
         **kwargs: Any,
     ) -> VideoResult:
-        """Generate a video from an image and optional text prompt.
-
-        All video generation models are asynchronous — this method automatically
-        polls until completion and returns the final VideoResult.
+        """Animate an image into a video, waiting until it is ready.
 
         Args:
-            image: Source image as a file path, bytes, (filename, bytes) tuple,
-                   or HTTP URL pointing to an already-uploaded image.
-            prompt: Optional text description to guide the animation.
-            model: Video model. Options: 'luma-ai', 'kling'. Default: 'luma-ai'.
-            **kwargs: Additional model parameters passed to the API.
+            image: Start frame (path, bytes, URL, or asset key).
+            prompt: Description of the desired motion.
+            model: Model id; defaults to ``DEFAULT_MODELS["IMAGE_TO_VIDEO"]``
+                (Kling).
+            duration: Length in seconds (Kling: 5 or 10).
+            aspect_ratio: e.g. "16:9", "9:16", "1:1".
+            **kwargs: Extra promptObject fields.
 
         Returns:
-            VideoResult with url pointing to the generated video file.
+            VideoResult: ``url`` is a temporary download link.
 
         Example:
-            result = client.video.from_image("photo.jpg", "animate the scene")
+            result = client.video.from_image("photo.jpg", "slow zoom in")
             print(result.url)
         """
-        image_url = self._upload(image)
-
-        prompt_object: dict[str, Any] = {
-            "prompt": prompt,
-            "imageUrl": image_url,
-            **kwargs,
-        }
-
-        payload = {
-            "type": "IMAGE_TO_VIDEO",
-            "model": model,
-            "promptObject": prompt_object,
-        }
-
-        response = self._client._request(
-            "POST", "/api/features", json=payload, timeout=self._timeout
+        fields = {"imageUrl": self._upload_asset(image), "prompt": prompt}
+        payload, model = _video_payload(
+            "IMAGE_TO_VIDEO", model, fields, duration, aspect_ratio, kwargs
         )
+        return _parse_video_result(self._call_feature(payload, background=True), model)
 
-        return self._poll_and_parse(response, model)
+    # ------------------------------------------------------------------
+    # Async methods (same arguments and results as the sync versions)
+    # ------------------------------------------------------------------
+
+    async def agenerate(
+        self,
+        prompt: str,
+        *,
+        model: str | None = None,
+        duration: Optional[int] = None,
+        aspect_ratio: Optional[str] = None,
+        **kwargs: Any,
+    ) -> VideoResult:
+        """Async version of :meth:`generate`."""
+        payload, model = _video_payload(
+            "TEXT_TO_VIDEO", model, {"prompt": prompt}, duration, aspect_ratio, kwargs
+        )
+        record = await self._acall_feature(payload, background=True)
+        return _parse_video_result(record, model)
+
+    async def afrom_image(
+        self,
+        image: Union[FileInput, str],
+        prompt: str = "",
+        *,
+        model: str | None = None,
+        duration: Optional[int] = None,
+        aspect_ratio: Optional[str] = None,
+        **kwargs: Any,
+    ) -> VideoResult:
+        """Async version of :meth:`from_image`."""
+        fields = {"imageUrl": await self._aupload_asset(image), "prompt": prompt}
+        payload, model = _video_payload(
+            "IMAGE_TO_VIDEO", model, fields, duration, aspect_ratio, kwargs
+        )
+        record = await self._acall_feature(payload, background=True)
+        return _parse_video_result(record, model)

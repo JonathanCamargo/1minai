@@ -33,7 +33,7 @@ from onemin.models import (
     ConversationResult,
     AssetResult,
 )
-from onemin.constants import Models
+from onemin.constants import DEFAULT_MODELS, FEATURE_MODELS, Models
 
 __all__ = [
     "__version__",
@@ -57,4 +57,6 @@ __all__ = [
     "ConversationResult",
     "AssetResult",
     "Models",
+    "DEFAULT_MODELS",
+    "FEATURE_MODELS",
 ]

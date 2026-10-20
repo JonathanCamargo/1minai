@@ -54,8 +54,10 @@ def main() -> None:
     if not input_text or not input_text.strip():
         parser.error("No text provided. Pass text, --file, or --stdin.")
 
-    client = OneMinClient(api_key=args.api_key)
-    result = client.writing.summarize(input_text, model=args.model, maxLength=args.words)
+    # No retries: a timed-out generation that is retried gets billed again.
+    client = OneMinClient(api_key=args.api_key, timeout=120, max_retries=0)
+    extra = {"maxLength": args.words} if args.words else {}
+    result = client.writing.summarize(input_text, model=args.model, **extra)
     print(result.content)
 
 

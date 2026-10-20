@@ -11,23 +11,23 @@ if not api_key:
 
 client = OneMinClient(api_key=api_key)
 
-# --- Demo 1: Generate an image with DALL-E 3 ---
+# --- Demo 1: Generate an image with Stable Diffusion XL ---
 result = client.image.generate(
     "A photorealistic golden retriever playing in autumn leaves",
-    model=Models.Image.DALL_E_3,
+    model=Models.Image.STABLE_DIFFUSION_XL,
     width=1024,
     height=1024,
 )
-print("=== Generated image (DALL-E 3) ===")
+print("=== Generated image (Stable Diffusion XL) ===")
 print(f"URL: {result.url}")
 print()
 
-# --- Demo 2: Generate with Flux Schnell (faster model) ---
+# --- Demo 2: Generate with Flux Dev ---
 result = client.image.generate(
     "A minimalist logo of a mountain peak at sunrise",
-    model=Models.Image.FLUX_SCHNELL,
+    model=Models.Image.FLUX_DEV,
 )
-print(f"=== Generated image ({Models.Image.FLUX_SCHNELL}) ===")
+print(f"=== Generated image ({Models.Image.FLUX_DEV}) ===")
 print(f"URL: {result.url}")
 print()
 

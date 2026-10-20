@@ -118,6 +118,19 @@ def _python_source(data: dict[str, Any]) -> str:
     out.append("}")
     out.append("")
     out.append("")
+    out.append("# Feature type -> model used when a method is called without ``model=``.")
+    out.append("DEFAULT_MODELS: dict[str, str] = {")
+    for feature, info in data.get("features", {}).items():
+        out.append(f'    "{feature}": "{info["default"]}",')
+    out.append("}")
+    out.append("")
+    out.append("# Feature type -> every model id the API accepts for it.")
+    out.append("FEATURE_MODELS: dict[str, list[str]] = {")
+    for feature, info in data.get("features", {}).items():
+        out.append(f'    "{feature}": {json.dumps(info["models"])},')
+    out.append("}")
+    out.append("")
+    out.append("")
     out.append("def all_ids(domain: str | None = None) -> list[str]:")
     out.append('    """Return every known model id, optionally filtered by domain."""')
     out.append("    if domain is None:")
@@ -173,6 +186,18 @@ def _ts_source(data: dict[str, Any]) -> str:
                 f'provider: "{entry["provider"]}", label: "{entry["label"]}"{tags_part} }},'
             )
         out.append("  ],")
+    out.append("};")
+    out.append("")
+    out.append("/** Feature type -> model used when a method is called without `model`. */")
+    out.append("export const DEFAULT_MODELS: Record<string, string> = {")
+    for feature, info in data.get("features", {}).items():
+        out.append(f'  {feature}: "{info["default"]}",')
+    out.append("};")
+    out.append("")
+    out.append("/** Feature type -> every model id the API accepts for it. */")
+    out.append("export const FEATURE_MODELS: Record<string, string[]> = {")
+    for feature, info in data.get("features", {}).items():
+        out.append(f'  {feature}: {json.dumps(info["models"])},')
     out.append("};")
     out.append("")
     out.append("export function allIds(domain?: keyof typeof MODEL_CATALOGUE): string[] {")

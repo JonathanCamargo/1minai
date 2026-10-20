@@ -12,11 +12,17 @@ Usage::
     from onemin import Models
 
     model = Models.Text.GPT_4O
-    model = Models.Image.MIDJOURNEY
+    model = Models.Image.STABLE_DIFFUSION_XL
     model = Models.Audio.WHISPER_1
-    model = Models.Video.LUMA_AI
+    model = Models.Video.KLING
 """
 
-from onemin._models_data import MODEL_CATALOGUE, Models, all_ids
+from onemin._models_data import (
+    DEFAULT_MODELS,
+    FEATURE_MODELS,
+    MODEL_CATALOGUE,
+    Models,
+    all_ids,
+)
 
-__all__ = ["Models", "MODEL_CATALOGUE", "all_ids"]
+__all__ = ["Models", "MODEL_CATALOGUE", "DEFAULT_MODELS", "FEATURE_MODELS", "all_ids"]

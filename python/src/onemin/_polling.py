@@ -2,7 +2,7 @@
 
 Provides sync and async poll loops for jobs that return asynchronously —
 e.g. Midjourney image generation, video creation. The poller takes a job ID,
-polls GET /api/jobs/{id} at increasing intervals until a completion signal is
+polls GET /api/results/{id} at increasing intervals until a completion signal is
 detected, then returns the final result dict.
 
 Completion detection is flexible and handles multiple response shapes:
@@ -53,7 +53,7 @@ _COMPLETE_STATUSES: frozenset[str] = frozenset({
     "completed", "complete", "done", "succeeded", "success",
 })
 _FAILED_STATUSES: frozenset[str] = frozenset({
-    "failed", "error", "cancelled", "canceled",
+    "failed", "failure", "error", "cancelled", "canceled",
 })
 
 
@@ -71,11 +71,13 @@ def is_job_complete(data: dict[str, Any]) -> bool:
     3. ``output`` field is present and non-null
 
     Args:
-        data: Parsed JSON response from GET /api/jobs/{id}.
+        data: Parsed JSON response from GET /api/results/{id}.
 
     Returns:
         True if the job appears to be complete, False otherwise.
     """
+    # GET /api/results/{uuid} wraps the record in "aiRecord".
+    data = data.get("aiRecord") or data
     status = str(data.get("status", "")).lower()
     if status in _COMPLETE_STATUSES:
         return True
@@ -90,11 +92,13 @@ def is_job_failed(data: dict[str, Any]) -> bool:
     """Check if a job polling response indicates a failure.
 
     Args:
-        data: Parsed JSON response from GET /api/jobs/{id}.
+        data: Parsed JSON response from GET /api/results/{id}.
 
     Returns:
         True if the job has failed (should not keep polling), False otherwise.
     """
+    # GET /api/results/{uuid} wraps the record in "aiRecord".
+    data = data.get("aiRecord") or data
     status = str(data.get("status", "")).lower()
     return status in _FAILED_STATUSES
 
@@ -113,7 +117,7 @@ def poll_job(
     interval: float = DEFAULT_POLL_INTERVAL,
     max_wait: float = DEFAULT_MAX_WAIT,
 ) -> dict[str, Any]:
-    """Sync: poll GET /api/jobs/{job_id} until the job completes or times out.
+    """Sync: poll GET /api/results/{job_id} until the job completes or times out.
 
     Polls at ``interval`` seconds initially, increasing linearly by
     ``POLL_BACKOFF_STEP`` each cycle up to ``MAX_POLL_INTERVAL``.
@@ -139,7 +143,7 @@ def poll_job(
 
     while time.monotonic() < deadline:
         response = client.get(
-            f"{base_url}/api/jobs/{job_id}",
+            f"{base_url}/api/results/{job_id}",
             headers={API_KEY_HEADER: api_key},
             timeout=httpx.Timeout(30.0),
         )
@@ -147,8 +151,11 @@ def poll_job(
         last_data = response.json()
 
         if is_job_failed(last_data):
+            record = last_data.get("aiRecord") or last_data
+            detail = (record.get("aiRecordDetail") or {}).get("resultObject")
             error_msg = str(
-                last_data.get("error", last_data.get("message", last_data))
+                (detail.get("message") if isinstance(detail, dict) else detail)
+                or record.get("error", record.get("message", record))
             )
             raise APIError(f"Job {job_id} failed: {error_msg}", status_code=0)
 
@@ -178,7 +185,7 @@ async def apoll_job(
     interval: float = DEFAULT_POLL_INTERVAL,
     max_wait: float = DEFAULT_MAX_WAIT,
 ) -> dict[str, Any]:
-    """Async: poll GET /api/jobs/{job_id} until the job completes or times out.
+    """Async: poll GET /api/results/{job_id} until the job completes or times out.
 
     Mirrors ``poll_job`` but uses ``await anyio.sleep()`` for non-blocking waits,
     making it compatible with both asyncio and trio event loops.
@@ -204,7 +211,7 @@ async def apoll_job(
 
     while time.monotonic() < deadline:
         response = await client.get(
-            f"{base_url}/api/jobs/{job_id}",
+            f"{base_url}/api/results/{job_id}",
             headers={API_KEY_HEADER: api_key},
             timeout=httpx.Timeout(30.0),
         )
@@ -212,8 +219,11 @@ async def apoll_job(
         last_data = response.json()
 
         if is_job_failed(last_data):
+            record = last_data.get("aiRecord") or last_data
+            detail = (record.get("aiRecordDetail") or {}).get("resultObject")
             error_msg = str(
-                last_data.get("error", last_data.get("message", last_data))
+                (detail.get("message") if isinstance(detail, dict) else detail)
+                or record.get("error", record.get("message", record))
             )
             raise APIError(f"Job {job_id} failed: {error_msg}", status_code=0)
 

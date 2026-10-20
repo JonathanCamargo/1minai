@@ -14,8 +14,12 @@ Covers:
 - ConversationResource.send() sends correct payload and returns ConversationResult
 """
 
+import json
 from unittest.mock import MagicMock, patch
+
+import httpx
 import pytest
+import respx
 
 from onemin import OneMinClient
 from onemin.resources import (
@@ -525,3 +529,151 @@ def test_conversation_send_sends_correct_payload(client: OneMinClient) -> None:
     assert payload["promptObject"]["conversationId"] == "conv_id_123"
     # conversationId moved into promptObject — no longer at top level.
     assert "conversationId" not in {k for k in payload if k != "promptObject"}
+
+
+def test_resource_timeout_honours_longer_client_timeout() -> None:
+    client = OneMinClient(api_key="test-key-1234567890", timeout=300.0)
+    assert client.text._timeout == 300.0
+    assert client.video._timeout == 300.0
+    client.close()
+
+
+@respx.mock
+def test_text_chat_attaches_files(client: OneMinClient, tmp_path) -> None:
+    pdf = tmp_path / "paper.pdf"
+    pdf.write_bytes(b"%PDF-1.4")
+    respx.post("https://api.1min.ai/api/assets").mock(
+        return_value=httpx.Response(200, json={"asset": {"location": "x"}, "fileContent": {"uuid": "asset-1"}})
+    )
+    route = respx.post("https://api.1min.ai/api/chat-with-ai").mock(
+        return_value=httpx.Response(
+            200, json={"aiRecord": {"aiRecordDetail": {"resultObject": ["ok"]}}}
+        )
+    )
+    result = client.text.chat("Summarize", files=[str(pdf), "existing-id"])
+    assert result.content == "ok"
+    body = json.loads(route.calls.last.request.content)
+    assert body["promptObject"]["attachments"] == {"files": ["asset-1", "existing-id"]}
+
+
+# ---------------------------------------------------------------------------
+# /api/features media methods: defaults, payload fields, result parsing
+# ---------------------------------------------------------------------------
+
+FEATURES_URL = "https://api.1min.ai/api/features"
+
+
+def _record(feature: str, items, **extra) -> dict:
+    return {
+        "aiRecord": {
+            "uuid": "rec-1",
+            "type": feature,
+            "status": "SUCCESS",
+            "aiRecordDetail": {"resultObject": items},
+            "temporaryUrl": "https://signed.example/file",
+            **extra,
+        }
+    }
+
+
+@respx.mock
+def test_image_generate_uses_default_model_and_its_required_fields(client: OneMinClient) -> None:
+    route = respx.post(FEATURES_URL).mock(
+        return_value=httpx.Response(200, json=_record("IMAGE_GENERATOR", ["images/a.png"]))
+    )
+    result = client.image.generate("a cat", width=1344, height=768)
+    body = json.loads(route.calls.last.request.content)
+    assert body["model"] == "stable-diffusion-xl-1024-v1-0"
+    assert body["promptObject"] == {
+        "samples": 1, "size": "1344x768", "cfg_scale": 7, "steps": 30, "seed": 0,
+        "prompt": "a cat",
+    }
+    assert result.url == "https://signed.example/file"
+    assert result.keys == ["images/a.png"]
+
+
+@respx.mock
+def test_image_generate_other_model_gets_only_caller_fields(client: OneMinClient) -> None:
+    route = respx.post(FEATURES_URL).mock(
+        return_value=httpx.Response(200, json=_record("IMAGE_GENERATOR", ["images/a.png"]))
+    )
+    client.image.generate("a cat", model="black-forest-labs/flux-dev", aspect_ratio="16:9")
+    body = json.loads(route.calls.last.request.content)
+    assert body["promptObject"] == {"prompt": "a cat", "aspect_ratio": "16:9"}
+
+
+@respx.mock
+def test_image_edit_uploads_file_and_sends_asset_key(client: OneMinClient, tmp_path) -> None:
+    photo = tmp_path / "photo.png"
+    photo.write_bytes(b"png")
+    respx.post("https://api.1min.ai/api/assets").mock(
+        return_value=httpx.Response(200, json={"asset": {"key": "images/photo.png"}})
+    )
+    route = respx.post(FEATURES_URL).mock(
+        return_value=httpx.Response(200, json=_record("SEARCH_AND_REPLACE", ["images/out.png"]))
+    )
+    client.image.search_and_replace(str(photo), "banana", "an eggplant")
+    body = json.loads(route.calls.last.request.content)
+    assert body["type"] == "SEARCH_AND_REPLACE"
+    assert body["model"] == "stable-image"
+    assert body["promptObject"] == {
+        "output_format": "png",
+        "imageUrl": "images/photo.png",
+        "search_prompt": "banana",
+        "prompt": "an eggplant",
+    }
+
+
+@respx.mock
+def test_image_asset_key_is_passed_through_without_upload(client: OneMinClient) -> None:
+    route = respx.post(FEATURES_URL).mock(
+        return_value=httpx.Response(200, json=_record("IMAGE_TO_PROMPT", ["a red apple"]))
+    )
+    result = client.image.to_prompt("images/earlier_result.png")
+    body = json.loads(route.calls.last.request.content)
+    assert body["promptObject"]["imageUrl"] == "images/earlier_result.png"
+    assert result.content == "a red apple"
+
+
+@respx.mock
+def test_feature_failure_status_raises(client: OneMinClient) -> None:
+    from onemin import APIError
+
+    failed = _record("IMAGE_GENERATOR", {"message": "provider exploded"})
+    failed["aiRecord"]["status"] = "FAILURE"
+    respx.post(FEATURES_URL).mock(return_value=httpx.Response(200, json=failed))
+    with pytest.raises(APIError, match="provider exploded"):
+        client.image.generate("a cat")
+
+
+@respx.mock
+def test_audio_speak_and_transcribe(client: OneMinClient) -> None:
+    route = respx.post(FEATURES_URL).mock(
+        side_effect=[
+            httpx.Response(200, json=_record("TEXT_TO_SPEECH", ["audios/a.mp3"])),
+            httpx.Response(200, json=_record("AUDIO_TRANSLATOR", ['{"text":"hello"}'])),
+        ]
+    )
+    spoken = client.audio.speak("hi", voice="nova")
+    body = json.loads(route.calls[0].request.content)
+    assert body["promptObject"] == {
+        "voice": "nova", "response_format": "mp3", "speed": 1, "text": "hi",
+    }
+    assert spoken.keys == ["audios/a.mp3"]
+    assert client.audio.translate(spoken.keys[0]).content == "hello"
+
+
+@respx.mock
+def test_video_generate_runs_in_background_and_polls(client: OneMinClient) -> None:
+    processing = _record("TEXT_TO_VIDEO", [])
+    processing["aiRecord"]["status"] = "PROCESSING"
+    route = respx.post(FEATURES_URL).mock(return_value=httpx.Response(200, json=processing))
+    respx.get("https://api.1min.ai/api/results/rec-1").mock(
+        return_value=httpx.Response(200, json=_record("TEXT_TO_VIDEO", ["videos/v.mp4"]))
+    )
+    result = client.video.generate("a sunset")
+    body = json.loads(route.calls.last.request.content)
+    assert body["async"] is True
+    assert body["model"] == "kling"
+    assert body["promptObject"]["duration"] == 5
+    assert result.keys == ["videos/v.mp4"]

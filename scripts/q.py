@@ -35,7 +35,8 @@ def main() -> None:
     if not args.api_key:
         parser.error("API key is required. Set ONEMIN_API_KEY or use -k/--api-key.")
 
-    client = OneMinClient(api_key=args.api_key)
+    # No retries: a timed-out generation that is retried gets billed again.
+    client = OneMinClient(api_key=args.api_key, timeout=120, max_retries=0)
     result = client.text.chat(args.question, model=args.model)
     print(result.content)
 

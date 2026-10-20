@@ -32,7 +32,7 @@ result = client.text.chat("Explain quantum computing in one sentence")
 print(result.content)
 
 # Generate an image
-image = client.image.generate("A cat astronaut on Mars", model=Models.Image.DALL_E_3)
+image = client.image.generate("A cat astronaut on Mars", model=Models.Image.STABLE_DIFFUSION_XL)
 print(image.url)
 
 # Text to speech
@@ -52,7 +52,7 @@ const result = await client.text.chat('Explain quantum computing in one sentence
 console.log(result.content);
 
 // Generate an image
-const image = await client.image.generate('A cat astronaut on Mars', { model: Models.Image.DALL_E_3 });
+const image = await client.image.generate('A cat astronaut on Mars', { model: Models.Image.STABLE_DIFFUSION_XL });
 console.log(image.url);
 
 // Text to speech
@@ -65,7 +65,7 @@ console.log(audio.url);
 | Domain | Methods | Description |
 |--------|---------|-------------|
 | **Text** | `chat` | Chat with any LLM. Supports streaming and web search. |
-| **Image** | `generate`, `variation`, `upscale`, `extend`, `remove_background`, `replace_background`, `remove_text`, `remove_object`, `search_and_replace`, `inpaint`, `edit_text`, `swap_face`, `generate_3d`, `to_prompt` | Generate and edit images with 25+ models. |
+| **Image** | `generate`, `variation`, `upscale`, `extend`, `remove_background`, `replace_background`, `remove_text`, `remove_object`, `search_and_replace`, `inpaint`, `edit`, `swap_face`, `generate_3d`, `to_prompt` | Generate and edit images with 25+ models. |
 | **Audio** | `speak`, `transcribe`, `translate`, `generate_music` | TTS, speech-to-text, translation, and music generation. |
 | **Video** | `generate`, `from_image` | Text/image to video with auto-polling for completion. |
 | **Writing** | `keyword_research`, `blog_article`, `rewrite`, `expand`, `shorten`, `translate`, `paraphrase`, `summarize`, `check_grammar`, `summarize_youtube` | AI writing tools powered by any LLM. |
@@ -100,7 +100,8 @@ Methods that accept files (image editing, audio transcription, etc.) handle mult
 # Python: path, bytes, or URL
 client.image.remove_background("/path/to/photo.png")
 client.image.remove_background(image_bytes)
-client.image.remove_background("https://example.com/photo.png")  # URL passthrough
+client.image.remove_background("https://example.com/photo.png")  # downloaded, then uploaded
+client.image.upscale(result.keys[0])                             # asset key of an earlier result
 ```
 
 ```typescript
@@ -110,7 +111,7 @@ await client.image.removeBackground(['photo.png', imageBytes]);
 await client.image.removeBackground('https://example.com/photo.png');
 ```
 
-Files are automatically uploaded to the asset API before being sent to the feature endpoint.
+Files are automatically uploaded to the asset API before being sent to the feature endpoint. Results carry a temporary download `url` and the asset `keys` of the generated files.
 
 ## Async support
 
@@ -134,24 +135,48 @@ Tab-completable constants for all supported models:
 from onemin import Models
 
 Models.Text.GPT_4O
-Models.Text.CLAUDE_3_5_SONNET
-Models.Text.GEMINI_2_0_FLASH
-Models.Text.DEEPSEEK_R1
-Models.Image.MIDJOURNEY
-Models.Image.DALL_E_3
+Models.Text.CLAUDE_SONNET_5
+Models.Text.GEMINI_2_5_FLASH
+Models.Text.DEEPSEEK_V4_PRO
+Models.Image.STABLE_DIFFUSION_XL
+Models.Image.STABLE_DIFFUSION_XL
 Models.Image.STABLE_DIFFUSION_XL
 Models.Audio.TTS_1_HD
-Models.Audio.ELEVENLABS
-Models.Video.LUMA_AI
+Models.Audio.ELEVENLABS_TTS
+Models.Video.KLING
 ```
 
 ```typescript
 import { Models } from '@onemin/sdk';
 
 Models.Text.GPT_4O
-Models.Text.CLAUDE_3_5_SONNET
+Models.Text.CLAUDE_SONNET_5
 // ... same constants available
 ```
+
+### Defaults and the live catalogue
+
+Every method can be called without `model`; it then uses `DEFAULT_MODELS[feature]`.
+`FEATURE_MODELS[feature]` lists every model id the API accepts for that feature.
+Models other than the default take their own fields -- pass them as keyword
+arguments (see the per-model pages at https://docs.1min.ai/docs/api/intro):
+
+```python
+from onemin import DEFAULT_MODELS, FEATURE_MODELS
+
+DEFAULT_MODELS["IMAGE_GENERATOR"]        # "stable-diffusion-xl-1024-v1-0"
+FEATURE_MODELS["BACKGROUND_REMOVER"]     # ["clipdrop", "recraft", "stable-image"]
+client.image.generate("a cat", model="black-forest-labs/flux-dev", aspect_ratio="16:9")
+```
+
+The catalogue is refreshed from 1min.ai's public model listing:
+
+```bash
+python scripts/update_models.py          # update data/models.json + regenerate constants
+python scripts/update_models.py --check  # report differences only
+```
+
+`wip/workflow_models-update.yml` runs this weekly and opens a pull request.
 
 ## Error handling
 
@@ -233,6 +258,8 @@ The scripts load configuration in this priority (system env always wins):
 |--------|-------------|---------|
 | `q.py` | Ask a text question to an LLM | `python scripts/q.py "what is quantum computing?"` |
 | `sum.py` | Summarize text from argument, file, or stdin | `python scripts/sum.py "long text..."` <br> `python scripts/sum.py -f article.txt` <br> `cat report.md \| python scripts/sum.py --stdin` |
+| `paper.py` | Analyze scientific papers (PDF, text, or URL): summary, critique, methods, JSON extraction, questions, comparison | `python scripts/paper.py paper.pdf` <br> `python scripts/paper.py paper.pdf -t critique -o notes.md` <br> `python scripts/paper.py https://arxiv.org/abs/1706.03762 -q "What was the training cost?"` <br> `python scripts/paper.py a.pdf b.pdf --compare` |
+| `models.py` | List live chat models with context size and credit rates | `python scripts/models.py` <br> `python scripts/models.py claude` <br> `python scripts/models.py --min-context 500000` |
 | `img.py` | Generate an image from a prompt | `python scripts/img.py "a futuristic city"` <br> `python scripts/img.py "sunset" -m dall-e-3 -W 512 -H 512` |
 | `speak.py` | Convert text to speech | `python scripts/speak.py "Hello world"` <br> `python scripts/speak.py -f story.txt -v Rachel` |
 

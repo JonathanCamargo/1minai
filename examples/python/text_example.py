@@ -19,9 +19,9 @@ print()
 # --- Demo 2: Chat with a specific model via Models constant ---
 result = client.text.chat(
     "Explain recursion in one sentence.",
-    model=Models.Text.CLAUDE_HAIKU,
+    model=Models.Text.CLAUDE_HAIKU_4_5_20251001,
 )
-print(f"=== Chat with {Models.Text.CLAUDE_HAIKU} ===")
+print(f"=== Chat with {Models.Text.CLAUDE_HAIKU_4_5_20251001} ===")
 print(result.content)
 print()
 

@@ -16,7 +16,7 @@ client = OneMinClient(api_key=api_key)
 print("Generating video with Luma AI (this may take a few minutes)...")
 result = client.video.generate(
     "A serene time-lapse of clouds drifting over mountain peaks at golden hour",
-    model=Models.Video.LUMA_AI,
+    model=Models.Video.KLING,
     aspect_ratio="16:9",
 )
 print("=== Generated video (Luma AI) ===")

@@ -21,17 +21,17 @@ def main() -> None:
     )
     parser.add_argument(
         "-m", "--model",
-        default=Models.Image.DALL_E_3,
-        help=f"Model to use (default: {Models.Image.DALL_E_3})",
+        default=Models.Image.STABLE_DIFFUSION_XL,
+        help=f"Model to use (default: {Models.Image.STABLE_DIFFUSION_XL})",
     )
     parser.add_argument(
-        "-W", "--width", type=int, default=1024, help="Image width (default: 1024)"
+        "-W", "--width", type=int, default=None, help="Image width"
     )
     parser.add_argument(
-        "-H", "--height", type=int, default=1024, help="Image height (default: 1024)"
+        "-H", "--height", type=int, default=None, help="Image height"
     )
     parser.add_argument(
-        "-n", type=int, default=1, dest="count", help="Number of images (default: 1)"
+        "-n", type=int, default=None, dest="count", help="Number of images"
     )
 
     args = parser.parse_args()

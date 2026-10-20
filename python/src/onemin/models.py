@@ -34,6 +34,10 @@ class ImageResult(BaseModel):
     url: str
     model: str
     urls: Optional[list[str]] = None
+    # Asset keys of the generated files; pass one as the image of another call.
+    keys: Optional[list[str]] = None
+    # Text output (image.to_prompt).
+    content: Optional[str] = None
     metadata: Optional[dict] = None
 
 
@@ -48,6 +52,8 @@ class AudioResult(BaseModel):
     model_config = ConfigDict(extra="ignore")
     url: Optional[str] = None
     content: Optional[str] = None
+    # Asset keys of the generated files; usable as input to another call.
+    keys: Optional[list[str]] = None
     model: str
     metadata: Optional[dict] = None
 
@@ -63,6 +69,7 @@ class VideoResult(BaseModel):
     model_config = ConfigDict(extra="ignore")
     url: str
     model: str
+    keys: Optional[list[str]] = None
     metadata: Optional[dict] = None
 
 

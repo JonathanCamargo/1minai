@@ -57,9 +57,12 @@ class AssetResource(BaseResource):
         response.raise_for_status()
         data = response.json()
         asset = data.get("asset", {})
+        # Documents get their id at fileContent.uuid -- this is the value
+        # chat attachments.files expects; "asset" itself carries no id.
+        file_content = data.get("fileContent") or {}
         return AssetResult(
             url=asset.get("location", ""),
-            asset_id=asset.get("id", ""),
+            asset_id=asset.get("id") or file_content.get("uuid", ""),
             content_type=asset.get("contentType"),
             metadata=asset,
         )
@@ -91,9 +94,12 @@ class AssetResource(BaseResource):
         response.raise_for_status()
         data = response.json()
         asset = data.get("asset", {})
+        # Documents get their id at fileContent.uuid -- this is the value
+        # chat attachments.files expects; "asset" itself carries no id.
+        file_content = data.get("fileContent") or {}
         return AssetResult(
             url=asset.get("location", ""),
-            asset_id=asset.get("id", ""),
+            asset_id=asset.get("id") or file_content.get("uuid", ""),
             content_type=asset.get("contentType"),
             metadata=asset,
         )

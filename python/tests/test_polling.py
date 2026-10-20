@@ -107,7 +107,7 @@ def test_is_job_failed_empty_returns_false():
 
 BASE_URL = "https://api.1min.ai"
 JOB_ID = "test-job-123"
-JOB_URL = f"{BASE_URL}/api/jobs/{JOB_ID}"
+JOB_URL = f"{BASE_URL}/api/results/{JOB_ID}"
 
 
 @respx.mock

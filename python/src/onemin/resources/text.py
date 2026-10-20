@@ -1,11 +1,13 @@
 """Text domain resource for the 1min.ai API."""
 from __future__ import annotations
+import os
 from typing import Any, AsyncGenerator, Generator, TYPE_CHECKING
 
 from onemin.resources._base_resource import BaseResource
 from onemin.models import TextResult
 from onemin._streaming import stream_sse
 from onemin._constants import API_KEY_HEADER
+from onemin._file_upload import FileInput
 
 if TYPE_CHECKING:
     from onemin._base_client import BaseOneMinClient
@@ -25,6 +27,7 @@ class TextResource(BaseResource):
         web_search: bool = False,
         num_of_site: int | None = None,
         max_word: int | None = None,
+        files: list[FileInput] | None = None,
         **kwargs: Any,
     ) -> TextResult | Generator[str, None, None]:
         """Send a chat/completion request to a language model.
@@ -47,6 +50,9 @@ class TextResource(BaseResource):
                 (only applied when web_search is True; default upstream is 3).
             max_word: Optional cap on words pulled from each site
                 (only applied when web_search is True; default upstream is 1000).
+            files: Documents (PDF, etc.) to attach. Paths, bytes, and
+                (filename, bytes) tuples are uploaded to the asset API first;
+                a string that is not an existing path is used as an asset id.
             **kwargs: Extra fields merged into promptObject. Useful keys:
                 ``conversationId``, ``attachments``, ``settings``,
                 ``brandVoiceId``, ``metadata``.
@@ -67,6 +73,12 @@ class TextResource(BaseResource):
                 web_search_settings["maxWord"] = max_word
             prompt_object["settings"] = {"webSearchSettings": web_search_settings}
         prompt_object.update(kwargs)
+        if files:
+            ids = [
+                f if _is_asset_id(f) else self._client.asset.upload(f).asset_id
+                for f in files
+            ]
+            _attach_files(prompt_object, ids)
 
         payload: dict[str, Any] = {
             "type": "UNIFY_CHAT_WITH_AI",
@@ -103,6 +115,7 @@ class TextResource(BaseResource):
         web_search: bool = False,
         num_of_site: int | None = None,
         max_word: int | None = None,
+        files: list[FileInput] | None = None,
         **kwargs: Any,
     ) -> TextResult | AsyncGenerator[str, None]:
         """Send a chat/completion request to a language model asynchronously.
@@ -117,6 +130,7 @@ class TextResource(BaseResource):
                 (only applied when web_search is True).
             max_word: Optional cap on words pulled from each site
                 (only applied when web_search is True).
+            files: Documents to attach (uploaded first unless already asset ids).
             **kwargs: Extra fields merged into promptObject (e.g. ``conversationId``,
                 ``attachments``, ``settings``, ``brandVoiceId``, ``metadata``).
 
@@ -136,6 +150,12 @@ class TextResource(BaseResource):
                 web_search_settings["maxWord"] = max_word
             prompt_object["settings"] = {"webSearchSettings": web_search_settings}
         prompt_object.update(kwargs)
+        if files:
+            ids = [
+                f if _is_asset_id(f) else (await self._client.asset.aupload(f)).asset_id
+                for f in files
+            ]
+            _attach_files(prompt_object, ids)
 
         payload: dict[str, Any] = {
             "type": "UNIFY_CHAT_WITH_AI",
@@ -191,3 +211,15 @@ class TextResource(BaseResource):
         else:
             content = "" if result_obj is None else str(result_obj)
         return TextResult(content=content, model=model)
+
+
+def _is_asset_id(file: FileInput) -> bool:
+    """A string that doesn't point at an existing file is taken as an asset id."""
+    return isinstance(file, str) and not os.path.exists(file)
+
+
+def _attach_files(prompt_object: dict[str, Any], ids: list[Any]) -> None:
+    """Append asset ids to ``attachments.files``, keeping caller-supplied attachments."""
+    attachments = dict(prompt_object.get("attachments") or {})
+    attachments["files"] = [*attachments.get("files", []), *ids]
+    prompt_object["attachments"] = attachments

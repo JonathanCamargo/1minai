@@ -85,7 +85,7 @@ class ConversationResource(BaseResource):
         conv = response.get("conversation", {})
         return ConversationResult(
             content="",
-            conversation_id=conv.get("id", ""),
+            conversation_id=conv.get("uuid") or conv.get("id", ""),
             model=model,
             metadata=conv,
         )
@@ -165,7 +165,7 @@ class ConversationResource(BaseResource):
         conv = response.get("conversation", {})
         return ConversationResult(
             content="",
-            conversation_id=conv.get("id", ""),
+            conversation_id=conv.get("uuid") or conv.get("id", ""),
             model=model,
             metadata=conv,
         )

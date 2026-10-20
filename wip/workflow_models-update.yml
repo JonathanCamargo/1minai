@@ -1,0 +1,53 @@
+name: models-update
+
+# Keeps data/models.json in step with the live 1min.ai catalogue.
+#
+# Weekly (and on demand) this runs scripts/update_models.py, which reads the
+# public GET /models endpoint -- no API key or secret needed -- adds newly
+# listed models, drops ones 1min.ai removed, and regenerates the Python and
+# TypeScript constants. Any difference is pushed to the models/auto-update
+# branch and opened as a pull request, so a removed model that some default
+# still points at gets reviewed instead of landing on main unseen.
+#
+# Move this file to .github/workflows/ to enable it. The repository must allow
+# GitHub Actions to create pull requests (Settings > Actions > General).
+
+on:
+  schedule:
+    - cron: "0 5 * * 1" # Mondays 05:00 UTC, an hour before models-sync
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: pip install httpx
+      - name: Refresh catalogue
+        run: python scripts/update_models.py | tee changes.txt
+      - name: Open or update pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if git diff --quiet -- data python/src/onemin/_models_data.py typescript/src/models-data.ts; then
+            echo "Catalogue unchanged."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin models/auto-update || true
+          git checkout -B models/auto-update
+          git add data/models.json python/src/onemin/_models_data.py typescript/src/models-data.ts
+          git commit -m "Update model catalogue from live 1min.ai listing"
+          git push --force-with-lease origin models/auto-update
+          gh pr view models/auto-update --json state --jq .state | grep -q OPEN \
+            || gh pr create --base main --head models/auto-update \
+                 --title "Update model catalogue" --body-file changes.txt

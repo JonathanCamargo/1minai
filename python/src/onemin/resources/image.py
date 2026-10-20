@@ -5,33 +5,78 @@ Domain timeout: 90s (per INFRA-07) — image generation takes significant time.
 Provides 14 public methods:
   generate, to_prompt, variation, upscale, extend,
   remove_background, replace_background, remove_text,
-  remove_object, search_and_replace, inpaint, edit_text,
+  remove_object, search_and_replace, inpaint, edit,
   swap_face, generate_3d.
 
 All editing methods follow the upload-then-feature pattern:
-  1. Upload the image file to /api/assets to get an asset URL.
-  2. POST to /api/features with the asset URL in promptObject.
+  1. Upload the image file to /api/assets to get an asset key.
+  2. POST to /api/features with the asset key in promptObject.
 
-generate() supports Midjourney auto-polling via poll_job.
+Every method works with any model the API lists for its feature (see
+``FEATURE_MODELS``). ``model=None`` picks ``DEFAULT_MODELS[feature]``, and the
+fields that default model requires are filled in for you. Other models take
+their own fields -- pass them as keyword arguments; they go into promptObject
+unchanged. Field reference per model: https://docs.1min.ai/docs/api/intro
 """
 
 from __future__ import annotations
 
 from typing import Any, Union
 
-from onemin._file_upload import FileInput, upload_file
-from onemin._models_data import Models
-from onemin._polling import poll_job
+from onemin._file_upload import FileInput
+from onemin._models_data import DEFAULT_MODELS
 from onemin.models import ImageResult
-from onemin.resources._base_resource import BaseResource
+from onemin.resources._base_resource import BaseResource, feature_payload, result_items
 
-# Midjourney triggers async job polling instead of returning a direct result.
-# Source the UUID from the generated catalogue so it stays in lockstep with
-# data/models.json.
-MIDJOURNEY_MODEL = Models.Image.MIDJOURNEY
-
-# ImageInput accepts either a file (for upload) or an HTTP URL string (used as-is)
+# ImageInput accepts a file to upload (path, bytes, (filename, bytes)), an
+# http(s) URL (downloaded, then uploaded), or the asset key of an earlier
+# upload or result (e.g. ``result.keys[0]``), which is used as-is.
 ImageInput = Union[FileInput, str]
+
+# Fields each default model requires (or misbehaves without), keyed by
+# (feature, model). Only applied when that exact model is used; caller
+# keyword arguments override them.
+_MODEL_DEFAULTS: dict[tuple[str, str], dict[str, Any]] = {
+    ("IMAGE_GENERATOR", "stable-diffusion-xl-1024-v1-0"): {
+        "samples": 1, "size": "1024x1024", "cfg_scale": 7, "steps": 30, "seed": 0,
+    },
+    ("IMAGE_UPSCALER", "stable-image"): {"output_format": "png"},
+    ("IMAGE_EXTENDER", "stable-image"): {"output_format": "png"},
+    ("IMAGE_INPAINTER", "stable-image"): {"output_format": "png"},
+    ("IMAGE_OBJECT_REMOVER", "stable-image"): {"output_format": "png"},
+    ("BACKGROUND_REMOVER", "stable-image"): {"output_format": "png"},
+    ("SEARCH_AND_REPLACE", "stable-image"): {"output_format": "png"},
+    ("IMAGE_EDITOR", "gpt-image-1-mini"): {
+        "size": "1024x1024", "n": 1, "quality": "medium",
+    },
+    ("BACKGROUND_REPLACER", "gpt-image-1-mini"): {
+        "size": "1024x1024", "quality": "medium",
+    },
+    ("FACE_SWAPPER", "Qubico/image-toolkit"): {"output_format": "png"},
+}
+
+
+def _parse_image_result(ai_record: dict[str, Any], model: str) -> ImageResult:
+    """Build an ImageResult from a finished aiRecord.
+
+    Results live at ``aiRecord.aiRecordDetail.resultObject`` as a list: asset
+    keys for generated files, or text for IMAGE_TO_PROMPT. ``temporaryUrl`` is
+    a signed, time-limited download link for the first generated file.
+    """
+    items = result_items(ai_record)
+    url: str = ai_record.get("temporaryUrl") or ""
+    if ai_record.get("type") == "IMAGE_TO_PROMPT":
+        return ImageResult(
+            url="", model=model, content="\n".join(str(i) for i in items),
+            metadata=ai_record,
+        )
+    return ImageResult(
+        url=url,
+        model=model,
+        urls=[url] if url else None,
+        keys=[str(i) for i in items] or None,
+        metadata=ai_record,
+    )
 
 
 class ImageResource(BaseResource):
@@ -40,7 +85,7 @@ class ImageResource(BaseResource):
     Domain timeout: 90s (per INFRA-07).
 
     Methods:
-        generate: Generate an image from a text prompt (supports Midjourney polling).
+        generate: Generate an image from a text prompt.
         to_prompt: Convert an image to a text description.
         variation: Generate a variation of an existing image.
         upscale: Upscale an image to higher resolution.
@@ -48,12 +93,14 @@ class ImageResource(BaseResource):
         remove_background: Remove the background from an image.
         replace_background: Replace the background with a new scene.
         remove_text: Remove text overlays from an image.
-        remove_object: Remove a specified object from an image.
+        remove_object: Remove the masked object from an image.
         search_and_replace: Find and replace an element in an image.
         inpaint: Fill a masked area in an image.
-        edit_text: Edit text within an image.
+        edit: Edit an image following a text instruction.
         swap_face: Swap a face from one image to another.
-        generate_3d: Generate a 3D representation of an object.
+        generate_3d: Generate a 3D model (.glb) of the pictured object.
+
+    Each has an async twin prefixed with ``a`` for ``AsyncOneMinClient``.
     """
 
     _domain = "image"
@@ -62,90 +109,57 @@ class ImageResource(BaseResource):
     # Private helpers
     # ------------------------------------------------------------------
 
-    def _upload(self, image: ImageInput) -> str:
-        """Upload a file to /api/assets or return a URL string as-is.
-
-        Args:
-            image: A file input (bytes, path, tuple) or an HTTP URL string.
-                   If the image is already an HTTP URL, it is returned unchanged.
-
-        Returns:
-            The URL string of the uploaded (or passed-through) asset.
-        """
-        if isinstance(image, str) and image.startswith("http"):
-            return image
-        return upload_file(
-            self._client._client,
-            self._client._base_url,
-            self._client._api_key,
-            image,  # type: ignore[arg-type]
-        )
-
-    def _upload_and_call(
+    def _run(
         self,
-        feature_type: str,
-        image: ImageInput,
-        model: str,
-        prompt_object_extra: dict[str, Any],
+        feature: str,
+        model: str | None,
+        images: dict[str, ImageInput],
+        fields: dict[str, Any],
     ) -> ImageResult:
-        """Upload an image and POST to /api/features.
+        """Upload ``images`` (promptObject field -> image), call the feature, parse."""
+        uploaded = {name: self._upload_asset(image) for name, image in images.items()}
+        payload, model = feature_payload(
+            feature, model, {**uploaded, **fields}, _MODEL_DEFAULTS
+        )
+        return _parse_image_result(self._call_feature(payload), model)
 
-        This helper encapsulates the repeated pattern used by all editing methods:
-          upload file -> build payload with imageUrl -> POST /api/features -> parse.
-
-        Args:
-            feature_type: The API feature type constant (e.g., "BACKGROUND_REMOVER").
-            image: File input or URL string for the image to process.
-            model: Model name to pass in the payload.
-            prompt_object_extra: Additional fields to merge into promptObject.
-
-        Returns:
-            An ImageResult with url, model, optional urls, and metadata.
-        """
-        asset_url = self._upload(image)
-        payload: dict[str, Any] = {
-            "type": feature_type,
-            "model": model,
-            "promptObject": {
-                "imageUrl": asset_url,
-                **prompt_object_extra,
-            },
+    async def _arun(
+        self,
+        feature: str,
+        model: str | None,
+        images: dict[str, ImageInput],
+        fields: dict[str, Any],
+    ) -> ImageResult:
+        """Async version of :meth:`_run`."""
+        uploaded = {
+            name: await self._aupload_asset(image) for name, image in images.items()
         }
-        response = self._client._request(
-            "POST", "/api/features", json=payload, timeout=self._timeout
+        payload, model = feature_payload(
+            feature, model, {**uploaded, **fields}, _MODEL_DEFAULTS
         )
-        return self._parse_image_result(response, model)
+        return _parse_image_result(await self._acall_feature(payload), model)
 
-    def _parse_image_result(
-        self, response: dict[str, Any], model: str
-    ) -> ImageResult:
-        """Extract an ImageResult from a raw /api/features response.
-
-        Handles these response shapes:
-          - response['aiRecord']['resultObject']['url']
-          - response['aiRecord']['resultObject']['imageUrl']
-          - response['aiRecord']['resultObject']['urls'] or ['images'] for multiple
-
-        Args:
-            response: Raw JSON response dictionary from the API.
-            model: Model name to include in the result.
-
-        Returns:
-            An ImageResult with url, model, optional urls, and metadata.
-        """
-        ai_record = response.get("aiRecord", {})
-        result_obj: dict[str, Any] = ai_record.get("resultObject", {})
-
-        url: str = (
-            result_obj.get("url")
-            or result_obj.get("imageUrl")
-            or ""
-        )
-        urls: list[str] | None = (
-            result_obj.get("urls") or result_obj.get("images") or None
-        )
-
-        return ImageResult(url=url, model=model, urls=urls, metadata=result_obj)
+    @staticmethod
+    def _generate_fields(
+        prompt: str, model: str | None, width: int | None, height: int | None,
+        n: int | None, kwargs: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Map generate()'s width/height/n onto what the chosen model expects."""
+        fields: dict[str, Any] = {"prompt": prompt}
+        model = model or DEFAULT_MODELS["IMAGE_GENERATOR"]
+        if model == "stable-diffusion-xl-1024-v1-0":
+            if width or height:
+                fields["size"] = f"{width or 1024}x{height or 1024}"
+            if n:
+                fields["samples"] = n
+        else:
+            # Other models name these differently (size, aspect_ratio,
+            # num_outputs, ...): only forward what the caller set explicitly.
+            for name, value in (("width", width), ("height", height), ("n", n)):
+                if value is not None:
+                    fields[name] = value
+        fields.update(kwargs)
+        return fields
 
     # ------------------------------------------------------------------
     # Public methods
@@ -155,261 +169,198 @@ class ImageResource(BaseResource):
         self,
         prompt: str,
         *,
-        model: str = "dall-e-3",
-        width: int = 1024,
-        height: int = 1024,
-        n: int = 1,
+        model: str | None = None,
+        width: int | None = None,
+        height: int | None = None,
+        n: int | None = None,
         **kwargs: Any,
     ) -> ImageResult:
         """Generate an image from a text prompt.
 
-        For Midjourney models the request is submitted as an async job and
-        automatically polled until completion (up to 5 minutes).
-
         Args:
             prompt: Text description of the image to generate.
-            model: Model to use (default "dall-e-3"). Pass "midjourney" or the
-                   Midjourney UUID to use Midjourney with auto-polling.
-            width: Image width in pixels (default 1024).
-            height: Image height in pixels (default 1024).
-            n: Number of images to generate (default 1).
-            **kwargs: Additional model-specific parameters forwarded to promptObject.
+            model: Model id; defaults to ``DEFAULT_MODELS["IMAGE_GENERATOR"]``
+                (Stable Diffusion XL). Any id in
+                ``FEATURE_MODELS["IMAGE_GENERATOR"]`` works.
+            width: Image width. For the default model, width x height must be
+                one of its supported sizes (1024x1024, 1344x768, 768x1344, ...).
+            height: Image height.
+            n: Number of images.
+            **kwargs: Model-specific promptObject fields (e.g. ``aspect_ratio``
+                for Flux, ``size``/``quality`` for gpt-image, ``style_preset``
+                for Stable Diffusion).
 
         Returns:
-            An ImageResult with the generated image URL and optional metadata.
+            ImageResult: ``url`` is a temporary download link for the first
+            image, ``keys`` the asset keys of all images.
 
         Example:
-            result = client.image.generate("a cat sitting on a red cushion")
+            result = client.image.generate("A cat astronaut on Mars")
             print(result.url)
         """
-        # Normalise Midjourney model references to the UUID
-        is_midjourney = (
-            model == MIDJOURNEY_MODEL
-            or model.lower().startswith("midjourney")
-        )
-        effective_model = MIDJOURNEY_MODEL if is_midjourney else model
-
-        payload: dict[str, Any] = {
-            "type": "IMAGE_GENERATOR",
-            "model": effective_model,
-            "promptObject": {
-                "prompt": prompt,
-                "width": width,
-                "height": height,
-                "n": n,
-                **kwargs,
-            },
-        }
-        response = self._client._request(
-            "POST", "/api/features", json=payload, timeout=self._timeout
-        )
-
-        if is_midjourney:
-            # Midjourney returns a job ID that must be polled for the result
-            job_id: str = response.get("aiRecord", {}).get("id", "")
-            response = poll_job(
-                self._client._client,
-                self._client._base_url,
-                self._client._api_key,
-                job_id,
-            )
-
-        return self._parse_image_result(response, effective_model)
+        fields = self._generate_fields(prompt, model, width, height, n, kwargs)
+        return self._run("IMAGE_GENERATOR", model, {}, fields)
 
     def to_prompt(
-        self,
-        image: ImageInput,
-        *,
-        model: str = "gpt-4o",
-        **kwargs: Any,
+        self, image: ImageInput, *, model: str | None = None, **kwargs: Any
     ) -> ImageResult:
-        """Convert an image to a text description (image-to-prompt).
+        """Describe an image as a text prompt.
 
         Args:
-            image: Image file or URL to describe.
-            model: Model to use (default "gpt-4o").
-            **kwargs: Additional parameters forwarded to promptObject.
+            image: Image to describe (path, bytes, URL, or asset key).
+            model: Model id; defaults to ``DEFAULT_MODELS["IMAGE_TO_PROMPT"]``.
+            **kwargs: Extra promptObject fields.
 
         Returns:
-            An ImageResult whose ``url`` field contains the description text.
+            ImageResult with the description in ``content``.
 
         Example:
-            result = client.image.to_prompt("https://example.com/photo.jpg")
-            print(result.url)
+            result = client.image.to_prompt("/path/to/photo.jpg")
+            print(result.content)
         """
-        return self._upload_and_call("IMAGE_TO_PROMPT", image, model, kwargs)
+        return self._run("IMAGE_TO_PROMPT", model, {"imageUrl": image}, kwargs)
 
     def variation(
-        self,
-        image: ImageInput,
-        *,
-        model: str = "dall-e-2",
-        n: int = 1,
-        **kwargs: Any,
+        self, image: ImageInput, *, model: str | None = None, **kwargs: Any
     ) -> ImageResult:
         """Generate a variation of an existing image.
 
         Args:
-            image: Source image file or URL.
-            model: Model to use (default "dall-e-2").
-            n: Number of variations to generate (default 1).
-            **kwargs: Additional parameters forwarded to promptObject.
-
-        Returns:
-            An ImageResult with the variation URL(s).
+            image: Source image (path, bytes, URL, or asset key).
+            model: Model id; defaults to ``DEFAULT_MODELS["IMAGE_VARIATOR"]``.
+            **kwargs: Extra promptObject fields (e.g. ``num_outputs``,
+                ``aspect_ratio`` for the default Flux Redux model).
 
         Example:
-            result = client.image.variation("photo.jpg")
+            result = client.image.variation("/path/to/photo.jpg")
             print(result.url)
         """
-        return self._upload_and_call(
-            "IMAGE_VARIATOR", image, model, {"n": n, **kwargs}
-        )
+        return self._run("IMAGE_VARIATOR", model, {"imageUrl": image}, kwargs)
 
     def upscale(
-        self,
-        image: ImageInput,
-        *,
-        model: str = "dall-e-2",
-        **kwargs: Any,
+        self, image: ImageInput, *, model: str | None = None, **kwargs: Any
     ) -> ImageResult:
-        """Upscale an image to higher resolution.
+        """Upscale an image to a higher resolution.
 
         Args:
-            image: Image file or URL to upscale.
-            model: Model to use (default "dall-e-2").
-            **kwargs: Additional parameters forwarded to promptObject.
-
-        Returns:
-            An ImageResult with the upscaled image URL.
+            image: Image to upscale (path, bytes, URL, or asset key).
+            model: Model id; defaults to ``DEFAULT_MODELS["IMAGE_UPSCALER"]``.
+            **kwargs: Extra promptObject fields (e.g. ``output_format``).
 
         Example:
-            result = client.image.upscale("photo.jpg")
+            result = client.image.upscale("/path/to/small.jpg")
             print(result.url)
         """
-        return self._upload_and_call("IMAGE_UPSCALER", image, model, kwargs)
+        return self._run("IMAGE_UPSCALER", model, {"imageUrl": image}, kwargs)
 
     def extend(
         self,
         image: ImageInput,
         *,
-        model: str = "dall-e-2",
+        left: int = 0,
+        right: int = 0,
+        up: int = 0,
+        down: int = 0,
+        model: str | None = None,
         **kwargs: Any,
     ) -> ImageResult:
         """Extend the canvas of an image outward (outpainting).
 
         Args:
-            image: Image file or URL to extend.
-            model: Model to use (default "dall-e-2").
-            **kwargs: Additional parameters forwarded to promptObject (e.g. direction).
-
-        Returns:
-            An ImageResult with the extended image URL.
+            image: Image to extend (path, bytes, URL, or asset key).
+            left: Pixels to add on the left (0-2000).
+            right: Pixels to add on the right (0-2000).
+            up: Pixels to add on top (0-2000).
+            down: Pixels to add at the bottom (0-2000).
+            model: Model id; defaults to ``DEFAULT_MODELS["IMAGE_EXTENDER"]``.
+            **kwargs: Extra promptObject fields.
 
         Example:
-            result = client.image.extend("photo.jpg")
+            result = client.image.extend("/path/to/photo.jpg", left=200, right=200)
             print(result.url)
         """
-        return self._upload_and_call("IMAGE_EXTENDER", image, model, kwargs)
+        sides = {"left": left, "right": right, "up": up, "down": down}
+        fields = {**{k: v for k, v in sides.items() if v}, **kwargs}
+        return self._run("IMAGE_EXTENDER", model, {"imageUrl": image}, fields)
 
     def remove_background(
-        self,
-        image: ImageInput,
-        *,
-        model: str = "dall-e-2",
-        **kwargs: Any,
+        self, image: ImageInput, *, model: str | None = None, **kwargs: Any
     ) -> ImageResult:
         """Remove the background from an image.
 
         Args:
-            image: Image file or URL.
-            model: Model to use (default "dall-e-2").
-            **kwargs: Additional parameters forwarded to promptObject.
-
-        Returns:
-            An ImageResult with the background-removed image URL.
+            image: Image to process (path, bytes, URL, or asset key).
+            model: Model id; defaults to ``DEFAULT_MODELS["BACKGROUND_REMOVER"]``.
+            **kwargs: Extra promptObject fields (e.g. ``output_format``).
 
         Example:
-            result = client.image.remove_background("photo.jpg")
+            result = client.image.remove_background("/path/to/portrait.jpg")
             print(result.url)
         """
-        return self._upload_and_call("BACKGROUND_REMOVER", image, model, kwargs)
+        return self._run("BACKGROUND_REMOVER", model, {"imageUrl": image}, kwargs)
 
     def replace_background(
         self,
         image: ImageInput,
         prompt: str,
         *,
-        model: str = "dall-e-2",
+        model: str | None = None,
         **kwargs: Any,
     ) -> ImageResult:
-        """Replace the background of an image with a new scene.
+        """Replace the background of an image with a described scene.
 
         Args:
-            image: Image file or URL with the foreground subject.
-            prompt: Text description of the new background.
-            model: Model to use (default "dall-e-2").
-            **kwargs: Additional parameters forwarded to promptObject.
-
-        Returns:
-            An ImageResult with the new-background image URL.
+            image: Image to process (path, bytes, URL, or asset key).
+            prompt: Description of the new background.
+            model: Model id; defaults to ``DEFAULT_MODELS["BACKGROUND_REPLACER"]``.
+            **kwargs: Extra promptObject fields (e.g. ``quality``, ``size``).
 
         Example:
-            result = client.image.replace_background("photo.jpg", "a sunny beach")
+            result = client.image.replace_background("portrait.jpg", "a sunny beach")
             print(result.url)
         """
-        return self._upload_and_call(
-            "BACKGROUND_REPLACER", image, model, {"prompt": prompt, **kwargs}
+        return self._run(
+            "BACKGROUND_REPLACER", model, {"imageUrl": image}, {"prompt": prompt, **kwargs}
         )
 
     def remove_text(
-        self,
-        image: ImageInput,
-        *,
-        model: str = "dall-e-2",
-        **kwargs: Any,
+        self, image: ImageInput, *, model: str | None = None, **kwargs: Any
     ) -> ImageResult:
         """Remove text overlays from an image.
 
         Args:
-            image: Image file or URL containing text to remove.
-            model: Model to use (default "dall-e-2").
-            **kwargs: Additional parameters forwarded to promptObject.
-
-        Returns:
-            An ImageResult with the text-removed image URL.
+            image: Image to process (path, bytes, URL, or asset key).
+            model: Model id; defaults to ``DEFAULT_MODELS["TEXT_REMOVER"]``.
+            **kwargs: Extra promptObject fields.
 
         Example:
-            result = client.image.remove_text("photo.jpg")
+            result = client.image.remove_text("/path/to/meme.jpg")
             print(result.url)
         """
-        return self._upload_and_call("TEXT_REMOVER", image, model, kwargs)
+        return self._run("TEXT_REMOVER", model, {"imageUrl": image}, kwargs)
 
     def remove_object(
         self,
         image: ImageInput,
-        prompt: str,
+        mask: ImageInput,
         *,
-        model: str = "dall-e-2",
+        model: str | None = None,
         **kwargs: Any,
     ) -> ImageResult:
-        """Remove a specified object from an image.
+        """Remove the masked object from an image.
 
         Args:
-            image: Image file or URL.
-            prompt: Description of the object to remove.
-            model: Model to use (default "dall-e-2").
-            **kwargs: Additional parameters forwarded to promptObject.
-
-        Returns:
-            An ImageResult with the object-removed image URL.
+            image: Image to process (path, bytes, URL, or asset key).
+            mask: Mask image, same size: white = remove, black = keep.
+            model: Model id; defaults to ``DEFAULT_MODELS["IMAGE_OBJECT_REMOVER"]``.
+            **kwargs: Extra promptObject fields.
 
         Example:
-            result = client.image.remove_object("photo.jpg", "the red car")
+            result = client.image.remove_object("photo.jpg", "mask.png")
             print(result.url)
         """
-        return self._upload_and_call(
-            "IMAGE_OBJECT_REMOVER", image, model, {"prompt": prompt, **kwargs}
+        return self._run(
+            "IMAGE_OBJECT_REMOVER", model, {"imageUrl": image, "maskUrl": mask}, kwargs
         )
 
     def search_and_replace(
@@ -418,35 +369,24 @@ class ImageResource(BaseResource):
         search_prompt: str,
         replace_prompt: str,
         *,
-        model: str = "dall-e-2",
+        model: str | None = None,
         **kwargs: Any,
     ) -> ImageResult:
-        """Find an element in an image and replace it.
+        """Find an element in an image and replace it with something else.
 
         Args:
-            image: Image file or URL.
-            search_prompt: Description of the element to find and replace.
-            replace_prompt: Description of what to replace it with.
-            model: Model to use (default "dall-e-2").
-            **kwargs: Additional parameters forwarded to promptObject.
-
-        Returns:
-            An ImageResult with the modified image URL.
+            image: Image to process (path, bytes, URL, or asset key).
+            search_prompt: Description of the element to find.
+            replace_prompt: Description of what to put in its place.
+            model: Model id; defaults to ``DEFAULT_MODELS["SEARCH_AND_REPLACE"]``.
+            **kwargs: Extra promptObject fields.
 
         Example:
-            result = client.image.search_and_replace("photo.jpg", "cat", "dog")
+            result = client.image.search_and_replace("photo.jpg", "red car", "blue bicycle")
             print(result.url)
         """
-        return self._upload_and_call(
-            "SEARCH_AND_REPLACE",
-            image,
-            model,
-            {
-                "searchPrompt": search_prompt,
-                "replacePrompt": replace_prompt,
-                **kwargs,
-            },
-        )
+        fields = {"search_prompt": search_prompt, "prompt": replace_prompt, **kwargs}
+        return self._run("SEARCH_AND_REPLACE", model, {"imageUrl": image}, fields)
 
     def inpaint(
         self,
@@ -454,67 +394,49 @@ class ImageResource(BaseResource):
         mask: ImageInput,
         prompt: str,
         *,
-        model: str = "dall-e-2",
+        model: str | None = None,
         **kwargs: Any,
     ) -> ImageResult:
-        """Fill a masked area of an image guided by a text prompt.
+        """Fill a masked area of an image with generated content.
 
         Args:
-            image: Source image file or URL.
-            mask: Mask image file or URL (white = area to fill, black = keep).
-            prompt: Text description of what to generate in the masked area.
-            model: Model to use (default "dall-e-2").
-            **kwargs: Additional parameters forwarded to promptObject.
-
-        Returns:
-            An ImageResult with the inpainted image URL.
+            image: Source image (path, bytes, URL, or asset key).
+            mask: Mask image, same size: white = edit, black = preserve.
+            prompt: Description of what to generate in the masked area.
+            model: Model id; defaults to ``DEFAULT_MODELS["IMAGE_INPAINTER"]``.
+            **kwargs: Extra promptObject fields.
 
         Example:
-            result = client.image.inpaint("photo.jpg", "mask.jpg", "a red rose")
+            result = client.image.inpaint("photo.jpg", "mask.png", "a blue sky")
             print(result.url)
         """
-        image_url = self._upload(image)
-        mask_url = self._upload(mask)
-        payload: dict[str, Any] = {
-            "type": "IMAGE_INPAINTER",
-            "model": model,
-            "promptObject": {
-                "imageUrl": image_url,
-                "maskUrl": mask_url,
-                "prompt": prompt,
-                **kwargs,
-            },
-        }
-        response = self._client._request(
-            "POST", "/api/features", json=payload, timeout=self._timeout
+        return self._run(
+            "IMAGE_INPAINTER", model, {"imageUrl": image, "maskUrl": mask},
+            {"prompt": prompt, **kwargs},
         )
-        return self._parse_image_result(response, model)
 
-    def edit_text(
+    def edit(
         self,
         image: ImageInput,
-        text_config: dict[str, Any],
+        prompt: str,
         *,
-        model: str = "dall-e-2",
+        model: str | None = None,
         **kwargs: Any,
     ) -> ImageResult:
-        """Edit text content within an image.
+        """Edit an image following a text instruction.
 
         Args:
-            image: Image file or URL containing text to edit.
-            text_config: Configuration dict describing the text edits.
-            model: Model to use (default "dall-e-2").
-            **kwargs: Additional parameters forwarded to promptObject.
-
-        Returns:
-            An ImageResult with the text-edited image URL.
+            image: Image to edit (path, bytes, URL, or asset key).
+            prompt: The change to make (e.g. "turn it into a watercolor").
+            model: Model id; defaults to ``DEFAULT_MODELS["IMAGE_EDITOR"]``.
+            **kwargs: Extra promptObject fields (e.g. ``quality``, ``size``).
 
         Example:
-            result = client.image.edit_text("photo.jpg", {"text": "Hello", "x": 10, "y": 10})
+            result = client.image.edit("photo.jpg", "make it a watercolor painting")
             print(result.url)
         """
-        return self._upload_and_call(
-            "IMAGE_EDITOR", image, model, {"textConfig": text_config, **kwargs}
+        return self._run(
+            "IMAGE_EDITOR", model, {"imageUrl": image}, {"prompt": prompt, **kwargs}
         )
 
     def swap_face(
@@ -522,450 +444,185 @@ class ImageResource(BaseResource):
         source_image: ImageInput,
         target_image: ImageInput,
         *,
-        model: str = "dall-e-2",
+        model: str | None = None,
         **kwargs: Any,
     ) -> ImageResult:
-        """Swap a face from the source image onto the target image.
+        """Put the face from ``source_image`` onto ``target_image``.
 
         Args:
-            source_image: Image file or URL containing the face to copy.
-            target_image: Image file or URL to place the face onto.
-            model: Model to use (default "dall-e-2").
-            **kwargs: Additional parameters forwarded to promptObject.
-
-        Returns:
-            An ImageResult with the face-swapped image URL.
+            source_image: Image containing the face to transfer.
+            target_image: Image whose face is replaced.
+            model: Model id; defaults to ``DEFAULT_MODELS["FACE_SWAPPER"]``.
+            **kwargs: Extra promptObject fields.
 
         Example:
-            result = client.image.swap_face("source.jpg", "target.jpg")
+            result = client.image.swap_face("my_face.jpg", "movie_poster.jpg")
             print(result.url)
         """
-        source_url = self._upload(source_image)
-        target_url = self._upload(target_image)
-        payload: dict[str, Any] = {
-            "type": "FACE_SWAPPER",
-            "model": model,
-            "promptObject": {
-                "sourceImageUrl": source_url,
-                "targetImageUrl": target_url,
-                **kwargs,
-            },
-        }
-        response = self._client._request(
-            "POST", "/api/features", json=payload, timeout=self._timeout
-        )
-        return self._parse_image_result(response, model)
+        images = {"swapImageUrl": source_image, "targetImageUrl": target_image}
+        return self._run("FACE_SWAPPER", model, images, kwargs)
 
-    # ------------------------------------------------------------------
-    # Async helpers and methods
-    # ------------------------------------------------------------------
-
-    async def _aupload(self, image: ImageInput) -> str:
-        """Async upload a file to /api/assets or return a URL string as-is.
-
-        Args:
-            image: A file input (bytes, path, tuple) or an HTTP URL string.
-                   If the image is already an HTTP URL, it is returned unchanged.
-
-        Returns:
-            The URL string of the uploaded (or passed-through) asset.
-        """
-        if isinstance(image, str) and image.startswith("http"):
-            return image
-        from onemin._file_upload import async_upload_file
-        return await async_upload_file(
-            self._client._http,
-            self._client._base_url,
-            self._client._api_key,
-            image,  # type: ignore[arg-type]
-        )
-
-    async def _aupload_and_call(
-        self,
-        feature_type: str,
-        image: ImageInput,
-        model: str,
-        prompt_object_extra: dict[str, Any],
+    def generate_3d(
+        self, image: ImageInput, *, model: str | None = None, **kwargs: Any
     ) -> ImageResult:
-        """Async upload an image and POST to /api/features.
+        """Generate a 3D model (.glb) of the object in an image.
 
         Args:
-            feature_type: The API feature type constant (e.g., "BACKGROUND_REMOVER").
-            image: File input or URL string for the image to process.
-            model: Model name to pass in the payload.
-            prompt_object_extra: Additional fields to merge into promptObject.
+            image: Source image (path, bytes, URL, or asset key).
+            model: Model id; defaults to ``DEFAULT_MODELS["IMAGE_3D_GENERATOR"]``.
+            **kwargs: Extra promptObject fields.
 
-        Returns:
-            An ImageResult with url, model, optional urls, and metadata.
+        Example:
+            result = client.image.generate_3d("/path/to/object.jpg")
+            client.image.download(result, "object.glb")
         """
-        asset_url = await self._aupload(image)
-        payload: dict[str, Any] = {
-            "type": feature_type,
-            "model": model,
-            "promptObject": {
-                "imageUrl": asset_url,
-                **prompt_object_extra,
-            },
-        }
-        response = await self._client._request(
-            "POST", "/api/features", json=payload, timeout=self._timeout
-        )
-        return self._parse_image_result(response, model)
+        return self._run("IMAGE_3D_GENERATOR", model, {"imageUrl": image}, kwargs)
+
+    # ------------------------------------------------------------------
+    # Async methods (same arguments and results as the sync versions)
+    # ------------------------------------------------------------------
 
     async def agenerate(
         self,
         prompt: str,
         *,
-        model: str = "dall-e-3",
-        width: int = 1024,
-        height: int = 1024,
-        n: int = 1,
+        model: str | None = None,
+        width: int | None = None,
+        height: int | None = None,
+        n: int | None = None,
         **kwargs: Any,
     ) -> ImageResult:
-        """Async version of generate().
+        """Async version of :meth:`generate`."""
+        fields = self._generate_fields(prompt, model, width, height, n, kwargs)
+        return await self._arun("IMAGE_GENERATOR", model, {}, fields)
 
-        For Midjourney models the request is submitted as an async job and
-        automatically polled until completion (up to 5 minutes).
-
-        Args:
-            prompt: Text description of the image to generate.
-            model: Model to use (default "dall-e-3"). Pass "midjourney" or the
-                   Midjourney UUID to use Midjourney with async polling.
-            width: Image width in pixels (default 1024).
-            height: Image height in pixels (default 1024).
-            n: Number of images to generate (default 1).
-            **kwargs: Additional model-specific parameters forwarded to promptObject.
-
-        Returns:
-            An ImageResult with the generated image URL and optional metadata.
-
-        Example:
-            result = await client.image.agenerate("a cat sitting on a red cushion")
-            print(result.url)
-        """
-        is_midjourney = (
-            model == MIDJOURNEY_MODEL
-            or model.lower().startswith("midjourney")
-        )
-        effective_model = MIDJOURNEY_MODEL if is_midjourney else model
-
-        payload: dict[str, Any] = {
-            "type": "IMAGE_GENERATOR",
-            "model": effective_model,
-            "promptObject": {
-                "prompt": prompt,
-                "width": width,
-                "height": height,
-                "n": n,
-                **kwargs,
-            },
-        }
-        response = await self._client._request(
-            "POST", "/api/features", json=payload, timeout=self._timeout
-        )
-
-        if is_midjourney:
-            from onemin._polling import apoll_job
-            job_id: str = response.get("aiRecord", {}).get("id", "")
-            response = await apoll_job(
-                self._client._http,
-                self._client._base_url,
-                self._client._api_key,
-                job_id,
-            )
-
-        return self._parse_image_result(response, effective_model)
-
-    async def ato_prompt(self, image: ImageInput, *, model: str = "gpt-4o", **kwargs: Any) -> ImageResult:
-        """Convert an image to a text description asynchronously.
-
-        Args:
-            image: Image file or URL to describe.
-            model: Model to use (default "gpt-4o").
-            **kwargs: Additional parameters forwarded to promptObject.
-
-        Returns:
-            An ImageResult whose ``url`` field contains the description text.
-
-        Example:
-            result = await client.image.ato_prompt("https://example.com/photo.jpg")
-            print(result.url)
-        """
-        return await self._aupload_and_call("IMAGE_TO_PROMPT", image, model, kwargs)
-
-    async def avariation(self, image: ImageInput, *, model: str = "dall-e-2", n: int = 1, **kwargs: Any) -> ImageResult:
-        """Generate a variation of an existing image asynchronously.
-
-        Args:
-            image: Source image file or URL.
-            model: Model to use (default "dall-e-2").
-            n: Number of variations to generate (default 1).
-            **kwargs: Additional parameters forwarded to promptObject.
-
-        Returns:
-            An ImageResult with the variation URL(s).
-
-        Example:
-            result = await client.image.avariation("photo.jpg")
-            print(result.url)
-        """
-        return await self._aupload_and_call("IMAGE_VARIATOR", image, model, {"n": n, **kwargs})
-
-    async def aupscale(self, image: ImageInput, *, model: str = "dall-e-2", **kwargs: Any) -> ImageResult:
-        """Upscale an image to higher resolution asynchronously.
-
-        Args:
-            image: Image file or URL to upscale.
-            model: Model to use (default "dall-e-2").
-            **kwargs: Additional parameters forwarded to promptObject.
-
-        Returns:
-            An ImageResult with the upscaled image URL.
-
-        Example:
-            result = await client.image.aupscale("photo.jpg")
-            print(result.url)
-        """
-        return await self._aupload_and_call("IMAGE_UPSCALER", image, model, kwargs)
-
-    async def aextend(self, image: ImageInput, *, model: str = "dall-e-2", **kwargs: Any) -> ImageResult:
-        """Extend the canvas of an image outward asynchronously.
-
-        Args:
-            image: Image file or URL to extend.
-            model: Model to use (default "dall-e-2").
-            **kwargs: Additional parameters forwarded to promptObject (e.g. direction).
-
-        Returns:
-            An ImageResult with the extended image URL.
-
-        Example:
-            result = await client.image.aextend("photo.jpg")
-            print(result.url)
-        """
-        return await self._aupload_and_call("IMAGE_EXTENDER", image, model, kwargs)
-
-    async def aremove_background(self, image: ImageInput, *, model: str = "dall-e-2", **kwargs: Any) -> ImageResult:
-        """Remove the background from an image asynchronously.
-
-        Args:
-            image: Image file or URL.
-            model: Model to use (default "dall-e-2").
-            **kwargs: Additional parameters forwarded to promptObject.
-
-        Returns:
-            An ImageResult with the background-removed image URL.
-
-        Example:
-            result = await client.image.aremove_background("photo.jpg")
-            print(result.url)
-        """
-        return await self._aupload_and_call("BACKGROUND_REMOVER", image, model, kwargs)
-
-    async def areplace_background(self, image: ImageInput, prompt: str, *, model: str = "dall-e-2", **kwargs: Any) -> ImageResult:
-        """Replace the background of an image with a new scene asynchronously.
-
-        Args:
-            image: Image file or URL with the foreground subject.
-            prompt: Text description of the new background.
-            model: Model to use (default "dall-e-2").
-            **kwargs: Additional parameters forwarded to promptObject.
-
-        Returns:
-            An ImageResult with the new-background image URL.
-
-        Example:
-            result = await client.image.areplace_background("photo.jpg", "a sunny beach")
-            print(result.url)
-        """
-        return await self._aupload_and_call("BACKGROUND_REPLACER", image, model, {"prompt": prompt, **kwargs})
-
-    async def aremove_text(self, image: ImageInput, *, model: str = "dall-e-2", **kwargs: Any) -> ImageResult:
-        """Remove text overlays from an image asynchronously.
-
-        Args:
-            image: Image file or URL containing text to remove.
-            model: Model to use (default "dall-e-2").
-            **kwargs: Additional parameters forwarded to promptObject.
-
-        Returns:
-            An ImageResult with the text-removed image URL.
-
-        Example:
-            result = await client.image.aremove_text("photo.jpg")
-            print(result.url)
-        """
-        return await self._aupload_and_call("TEXT_REMOVER", image, model, kwargs)
-
-    async def aremove_object(self, image: ImageInput, prompt: str, *, model: str = "dall-e-2", **kwargs: Any) -> ImageResult:
-        """Remove a specified object from an image asynchronously.
-
-        Args:
-            image: Image file or URL.
-            prompt: Description of the object to remove.
-            model: Model to use (default "dall-e-2").
-            **kwargs: Additional parameters forwarded to promptObject.
-
-        Returns:
-            An ImageResult with the object-removed image URL.
-
-        Example:
-            result = await client.image.aremove_object("photo.jpg", "the red car")
-            print(result.url)
-        """
-        return await self._aupload_and_call("IMAGE_OBJECT_REMOVER", image, model, {"prompt": prompt, **kwargs})
-
-    async def asearch_and_replace(
-        self, image: ImageInput, search_prompt: str, replace_prompt: str,
-        *, model: str = "dall-e-2", **kwargs: Any
+    async def ato_prompt(
+        self, image: ImageInput, *, model: str | None = None, **kwargs: Any
     ) -> ImageResult:
-        """Find an element in an image and replace it asynchronously.
+        """Async version of :meth:`to_prompt`."""
+        return await self._arun("IMAGE_TO_PROMPT", model, {"imageUrl": image}, kwargs)
 
-        Args:
-            image: Image file or URL.
-            search_prompt: Description of the element to find and replace.
-            replace_prompt: Description of what to replace it with.
-            model: Model to use (default "dall-e-2").
-            **kwargs: Additional parameters forwarded to promptObject.
-
-        Returns:
-            An ImageResult with the modified image URL.
-
-        Example:
-            result = await client.image.asearch_and_replace("photo.jpg", "cat", "dog")
-            print(result.url)
-        """
-        return await self._aupload_and_call(
-            "SEARCH_AND_REPLACE", image, model,
-            {"searchPrompt": search_prompt, "replacePrompt": replace_prompt, **kwargs},
-        )
-
-    async def ainpaint(
-        self, image: ImageInput, mask: ImageInput, prompt: str,
-        *, model: str = "dall-e-2", **kwargs: Any
+    async def avariation(
+        self, image: ImageInput, *, model: str | None = None, **kwargs: Any
     ) -> ImageResult:
-        """Fill a masked area of an image guided by a text prompt asynchronously.
+        """Async version of :meth:`variation`."""
+        return await self._arun("IMAGE_VARIATOR", model, {"imageUrl": image}, kwargs)
 
-        Args:
-            image: Source image file or URL.
-            mask: Mask image file or URL (white = area to fill, black = keep).
-            prompt: Text description of what to generate in the masked area.
-            model: Model to use (default "dall-e-2").
-            **kwargs: Additional parameters forwarded to promptObject.
-
-        Returns:
-            An ImageResult with the inpainted image URL.
-
-        Example:
-            result = await client.image.ainpaint("photo.jpg", "mask.jpg", "a red rose")
-            print(result.url)
-        """
-        image_url = await self._aupload(image)
-        mask_url = await self._aupload(mask)
-        payload: dict[str, Any] = {
-            "type": "IMAGE_INPAINTER",
-            "model": model,
-            "promptObject": {
-                "imageUrl": image_url,
-                "maskUrl": mask_url,
-                "prompt": prompt,
-                **kwargs,
-            },
-        }
-        response = await self._client._request(
-            "POST", "/api/features", json=payload, timeout=self._timeout
-        )
-        return self._parse_image_result(response, model)
-
-    async def aedit_text(self, image: ImageInput, text_config: dict[str, Any], *, model: str = "dall-e-2", **kwargs: Any) -> ImageResult:
-        """Edit text content within an image asynchronously.
-
-        Args:
-            image: Image file or URL containing text to edit.
-            text_config: Configuration dict describing the text edits.
-            model: Model to use (default "dall-e-2").
-            **kwargs: Additional parameters forwarded to promptObject.
-
-        Returns:
-            An ImageResult with the text-edited image URL.
-
-        Example:
-            result = await client.image.aedit_text("photo.jpg", {"text": "Hello", "x": 10, "y": 10})
-            print(result.url)
-        """
-        return await self._aupload_and_call("IMAGE_EDITOR", image, model, {"textConfig": text_config, **kwargs})
-
-    async def aswap_face(
-        self, source_image: ImageInput, target_image: ImageInput,
-        *, model: str = "dall-e-2", **kwargs: Any
+    async def aupscale(
+        self, image: ImageInput, *, model: str | None = None, **kwargs: Any
     ) -> ImageResult:
-        """Swap a face from the source image onto the target image asynchronously.
+        """Async version of :meth:`upscale`."""
+        return await self._arun("IMAGE_UPSCALER", model, {"imageUrl": image}, kwargs)
 
-        Args:
-            source_image: Image file or URL containing the face to copy.
-            target_image: Image file or URL to place the face onto.
-            model: Model to use (default "dall-e-2").
-            **kwargs: Additional parameters forwarded to promptObject.
-
-        Returns:
-            An ImageResult with the face-swapped image URL.
-
-        Example:
-            result = await client.image.aswap_face("source.jpg", "target.jpg")
-            print(result.url)
-        """
-        source_url = await self._aupload(source_image)
-        target_url = await self._aupload(target_image)
-        payload: dict[str, Any] = {
-            "type": "FACE_SWAPPER",
-            "model": model,
-            "promptObject": {
-                "sourceImageUrl": source_url,
-                "targetImageUrl": target_url,
-                **kwargs,
-            },
-        }
-        response = await self._client._request(
-            "POST", "/api/features", json=payload, timeout=self._timeout
-        )
-        return self._parse_image_result(response, model)
-
-    async def agenerate_3d(self, image: ImageInput, *, model: str = "dall-e-2", **kwargs: Any) -> ImageResult:
-        """Generate a 3D representation of an object from an image asynchronously.
-
-        Args:
-            image: Image file or URL of the object to convert to 3D.
-            model: Model to use (default "dall-e-2").
-            **kwargs: Additional parameters forwarded to promptObject.
-
-        Returns:
-            An ImageResult with the 3D model URL.
-
-        Example:
-            result = await client.image.agenerate_3d("object.jpg")
-            print(result.url)
-        """
-        return await self._aupload_and_call("IMAGE_3D_GENERATOR", image, model, kwargs)
-
-    def generate_3d(
+    async def aextend(
         self,
         image: ImageInput,
         *,
-        model: str = "dall-e-2",
+        left: int = 0,
+        right: int = 0,
+        up: int = 0,
+        down: int = 0,
+        model: str | None = None,
         **kwargs: Any,
     ) -> ImageResult:
-        """Generate a 3D representation of an object from an image.
+        """Async version of :meth:`extend`."""
+        sides = {"left": left, "right": right, "up": up, "down": down}
+        fields = {**{k: v for k, v in sides.items() if v}, **kwargs}
+        return await self._arun("IMAGE_EXTENDER", model, {"imageUrl": image}, fields)
 
-        Args:
-            image: Image file or URL of the object to convert to 3D.
-            model: Model to use (default "dall-e-2").
-            **kwargs: Additional parameters forwarded to promptObject.
+    async def aremove_background(
+        self, image: ImageInput, *, model: str | None = None, **kwargs: Any
+    ) -> ImageResult:
+        """Async version of :meth:`remove_background`."""
+        return await self._arun("BACKGROUND_REMOVER", model, {"imageUrl": image}, kwargs)
 
-        Returns:
-            An ImageResult with the 3D model URL.
+    async def areplace_background(
+        self,
+        image: ImageInput,
+        prompt: str,
+        *,
+        model: str | None = None,
+        **kwargs: Any,
+    ) -> ImageResult:
+        """Async version of :meth:`replace_background`."""
+        return await self._arun(
+            "BACKGROUND_REPLACER", model, {"imageUrl": image}, {"prompt": prompt, **kwargs}
+        )
 
-        Example:
-            result = client.image.generate_3d("object.jpg")
-            print(result.url)
-        """
-        return self._upload_and_call("IMAGE_3D_GENERATOR", image, model, kwargs)
+    async def aremove_text(
+        self, image: ImageInput, *, model: str | None = None, **kwargs: Any
+    ) -> ImageResult:
+        """Async version of :meth:`remove_text`."""
+        return await self._arun("TEXT_REMOVER", model, {"imageUrl": image}, kwargs)
+
+    async def aremove_object(
+        self,
+        image: ImageInput,
+        mask: ImageInput,
+        *,
+        model: str | None = None,
+        **kwargs: Any,
+    ) -> ImageResult:
+        """Async version of :meth:`remove_object`."""
+        return await self._arun(
+            "IMAGE_OBJECT_REMOVER", model, {"imageUrl": image, "maskUrl": mask}, kwargs
+        )
+
+    async def asearch_and_replace(
+        self,
+        image: ImageInput,
+        search_prompt: str,
+        replace_prompt: str,
+        *,
+        model: str | None = None,
+        **kwargs: Any,
+    ) -> ImageResult:
+        """Async version of :meth:`search_and_replace`."""
+        fields = {"search_prompt": search_prompt, "prompt": replace_prompt, **kwargs}
+        return await self._arun("SEARCH_AND_REPLACE", model, {"imageUrl": image}, fields)
+
+    async def ainpaint(
+        self,
+        image: ImageInput,
+        mask: ImageInput,
+        prompt: str,
+        *,
+        model: str | None = None,
+        **kwargs: Any,
+    ) -> ImageResult:
+        """Async version of :meth:`inpaint`."""
+        return await self._arun(
+            "IMAGE_INPAINTER", model, {"imageUrl": image, "maskUrl": mask},
+            {"prompt": prompt, **kwargs},
+        )
+
+    async def aedit(
+        self,
+        image: ImageInput,
+        prompt: str,
+        *,
+        model: str | None = None,
+        **kwargs: Any,
+    ) -> ImageResult:
+        """Async version of :meth:`edit`."""
+        return await self._arun(
+            "IMAGE_EDITOR", model, {"imageUrl": image}, {"prompt": prompt, **kwargs}
+        )
+
+    async def aswap_face(
+        self,
+        source_image: ImageInput,
+        target_image: ImageInput,
+        *,
+        model: str | None = None,
+        **kwargs: Any,
+    ) -> ImageResult:
+        """Async version of :meth:`swap_face`."""
+        images = {"swapImageUrl": source_image, "targetImageUrl": target_image}
+        return await self._arun("FACE_SWAPPER", model, images, kwargs)
+
+    async def agenerate_3d(
+        self, image: ImageInput, *, model: str | None = None, **kwargs: Any
+    ) -> ImageResult:
+        """Async version of :meth:`generate_3d`."""
+        return await self._arun("IMAGE_3D_GENERATOR", model, {"imageUrl": image}, kwargs)
