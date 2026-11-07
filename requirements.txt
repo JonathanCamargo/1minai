@@ -1,0 +1,28 @@
+# The onemin SDK itself (editable install from ./python)
+-e ./python
+
+# Runtime dependencies (mirrors python/pyproject.toml)
+httpx>=0.28.1,<1
+pydantic>=2.12,<3
+anyio>=3.5.0,<5
+httpx-sse>=0.4.0
+typing-extensions>=4.14,<5
+python-dotenv
+
+# Used by scripts/*.py (fileman.envars.load_env)
+fileman @ git+https://github.com/JonathanCamargo/fileman.git
+
+# Optional: scripts/paper.py local PDF reading
+pypdf
+
+# scripts/stt.py (microphone capture; Linux also needs the system package
+# libportaudio2: sudo apt install libportaudio2)
+sounddevice
+numpy
+
+# Dev / testing
+pytest>=8.0
+pytest-asyncio>=0.25
+respx>=0.22
+ruff>=0.15
+pyright>=1.1.390
